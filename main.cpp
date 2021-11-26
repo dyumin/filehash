@@ -68,7 +68,7 @@ int main(int argc, char* argv[])
         );
         std::string inputFile;
         std::string outputFile;
-        size_t blockSize = 1024;
+        uintmax_t blockSize = 1024;
         desc.add_options()
             ("help", "produce help message")
             ("input-file", boost::program_options::value(&inputFile)->required(), "Path to input file to hash, must be readable")
