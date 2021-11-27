@@ -100,10 +100,10 @@ public:
 
             // dispatch fully loaded threads
             uintmax_t offset = 0;
-            for (int i = 0; i < threadsCount - 1; ++i)
+            for (int i = 1; i < threadsCount; ++i)
             {
                 std::cout << offset << " to " << offset + threadViewSize << std::endl;
-                offset = threadViewSize * (i + 1);
+                offset = threadViewSize * i;
             }
 
             // dispatch tail processing thread
