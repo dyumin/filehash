@@ -9,6 +9,8 @@ namespace helpers {
 class MappedChunk final : boost::noncopyable
 {
 public:
+    MappedChunk() noexcept = default;
+
     MappedChunk(void* const data, const size_t size) noexcept: m_data(data), m_size(size)
     {}
 
