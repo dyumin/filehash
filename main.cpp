@@ -1,3 +1,5 @@
+#include "mapped_chunk.h"
+
 #include "fdhandle.h"
 
 #include <boost/program_options/options_description.hpp>
@@ -9,13 +11,33 @@
 #include <filesystem>
 #include <thread>
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 
 #include <fcntl.h>
 #include <sys/mman.h>
 
 using helpers::FDHandle;
+using helpers::MappedChunk;
 
+// todo: mmap64
 
+struct Task final
+{
+    const uintmax_t fileSize;
+    const uintmax_t blockSize;
+    const long int pageSize;
+
+    const uintmax_t startOffset; // from file start
+    const uintmax_t stopOffset; // from file start
+
+    uintmax_t currentOffset; // from file start
+
+    uintmax_t currentMappingOffset; // from file start
+    MappedChunk currentMapping;
+
+    std::vector<boost::crc_32_type::value_type> hash;
+};
 
 class FileHash final
 {
@@ -47,6 +69,15 @@ public:
 
     ~FileHash()
     {
+        m_stop.store(true, std::memory_order_release);
+        for (auto& worker: m_workers)
+        {
+            if (worker.joinable())
+            {
+                worker.join();
+            }
+        }
+
         if (!m_success)
         {
             std::error_code ec;
@@ -98,17 +129,47 @@ public:
                 threadsCount++;
             }
 
+            // TODO: determine dynamically
+            constexpr auto BytesToReserve = (size_t) 1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
+            constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->hash)::value_type);
+
             // dispatch fully loaded threads
             uintmax_t offset = 0;
             for (int i = 1; i < threadsCount; ++i)
             {
                 std::cout << offset << " to " << offset + threadViewSize << std::endl;
                 offset = threadViewSize * i;
+
+                m_tasksToProcess.emplace_back(Task{.fileSize = m_fileSize,
+                    .blockSize = m_blockSize,
+                    .pageSize = threadDispatchThreshold,
+                    .startOffset = offset,
+                    .stopOffset = offset + threadViewSize,
+                    .currentOffset = 0,
+                    .currentMappingOffset = 0});
+                m_tasksToProcess.back().hash.reserve(BytesToReserve / ElementSize);
             }
 
+            // TODO: what if there will be dead tasks?
             // dispatch tail processing thread
-            auto tail = m_fileSize - offset;
+            const auto tail = m_fileSize - offset;
             std::cout << offset << " to " << offset + tail << std::endl;
+            m_tasksToProcess.emplace_back(Task{.fileSize = m_fileSize,
+                .blockSize = m_blockSize,
+                .pageSize = threadDispatchThreshold,
+                .startOffset = offset,
+                .stopOffset = offset + tail,
+                .currentOffset = 0,
+                .currentMappingOffset = 0});
+            m_tasksToProcess.back().hash.reserve(BytesToReserve / ElementSize);
+
+            // TODO: dispatch
+
+//            boost::crc_32_type crc32;
+////            crc32.process_bytes(dataChunk, m_blockSize);
+//            auto result = crc32.checksum();
+//
+//            auto* const dataRaw = mmap(nullptr, 4096, PROT_READ, MAP_PRIVATE, m_inputFileHandle.Get(), 4096);
 
             int i = 0;
 
@@ -188,6 +249,15 @@ private:
 
     uintmax_t m_fileSize = 0;
     bool m_success = false;
+
+    std::atomic<bool> m_stop = {false}; // TODO: later
+    std::vector<std::thread> m_workers;
+
+    std::condition_variable m_cond;
+    std::mutex m_workingQueuesLock;
+    bool m_exit = false;
+    std::vector<Task> m_tasksToProcess;
+    std::vector<Task> m_readyTasks;
 };
 
 int main(int argc, char* argv[])
