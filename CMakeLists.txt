@@ -3,6 +3,8 @@ project(filehash)
 
 set(CMAKE_CXX_STANDARD 17)
 
+find_library(PTHREAD_LIBRARY pthread REQUIRED)
+
 # TODO: support clang (-ggdb)
 set(CMAKE_C_FLAGS_DEBUG "-ggdb -O0 -fno-inline" CACHE STRING "force set by root CMakeLists.txt" FORCE)
 set(CMAKE_CXX_FLAGS_DEBUG "-ggdb -O0 -fno-inline" CACHE STRING "force set by root CMakeLists.txt" FORCE)
@@ -20,4 +22,4 @@ file(MAKE_DIRECTORY ${EXTERNAL_PREFIX_DIR} ${EXTERNAL_INCLUDE_DIR} ${EXTERNAL_LI
 add_subdirectory(external)
 
 add_executable(filehash main.cpp)
-target_link_libraries(filehash boost_program_options)
+target_link_libraries(filehash boost_program_options ${PTHREAD_LIBRARY})
