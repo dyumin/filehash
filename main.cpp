@@ -246,81 +246,111 @@ public:
 
         }
 
-        std::thread work(
-            [&]()
+        m_workers.reserve(m_tasksToProcess.size());
+        {
+            std::unique_lock lock(m_workingQueuesLock);
+            for (auto i = 0; i < m_tasksToProcess.size(); i++)
             {
-                std::unique_ptr<Task> taskPtr;
-                while (1)
+                m_workers.emplace_back(std::thread([&]()
+                                                   {
+                                                       HashThreadBody();
+                                                   }));
+            }
+            // todo: dispatch writing
+        }
+
+        m_cond.notify_all();
+
+        for (auto& worker: m_workers)
+        {
+            worker.join();
+        }
+    }
+
+    void HashThreadBody()
+    {
+        std::unique_ptr<Task> taskPtr;
+        while (1)
+        {
+            {
+                std::unique_lock lock(m_workingQueuesLock);
+                if (m_exit)
                 {
-                    {
-                        std::unique_lock lock(m_workingQueuesLock);
-                        if (m_exit)
-                        {
-                            break;
-                        }
-                        if (m_tasksToProcess.empty())
-                        {
-                            m_cond.wait(lock, [&]()
-                            {
-                                return m_exit || !m_tasksToProcess.empty();
-                            });
-                            if (m_exit)
-                            {
-                                break;
-                            }
-                        }
-
-                        taskPtr = std::move(m_tasksToProcess.back()); // TODO: back
-//                        m_tasksToProcess.po
-                    }
-
-                    auto& task = *taskPtr;
-
-                    // all arithmetic normalized to zero
-                    if (!task.currentMapping)
-                    {
-                        const auto MMapMaxSize = task.stopOffset + (task.stopOffset % task.pageSize); // TODO: find the right value
-//                        const auto MMapMaxSize = 4096; // TODO: find the right value
-
-                        const auto initialMappingOffset = task.startOffset - (task.startOffset % task.pageSize);
-                        auto* const data = mmap(nullptr, MMapMaxSize, PROT_READ, MAP_PRIVATE, task.inputFileHandle->Get(), initialMappingOffset); // initial mapping
-                        if (data == MAP_FAILED)
-                        {
-                            // TODO: fail
-                            throw std::runtime_error("mmap failed " + std::to_string(errno));
-                        }
-                        task.currentMapping = MappedChunk(data, MMapMaxSize);
-                        task.currentMappingOffset = initialMappingOffset;
-                    }
-
-                    for (; task.currentOffset < task.stopOffset; task.currentOffset += task.blockSize)
-                    {
-                        boost::crc_32_type crc32;
-
-                        const auto currentOffsetEnd = std::min(task.currentOffset + task.blockSize, task.fileSize);
-                        for (auto i = task.currentOffset; i < currentOffsetEnd;)
-                        {
-                            const auto[data, size] = task.GetPointerToOffset(i); // NOTE: this will be inefficient for small task.blockSize values
-                            const auto bytesToProcess = std::min(currentOffsetEnd - i, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
-                            i += bytesToProcess;
-                            crc32.process_bytes(data, bytesToProcess);
-                        }
-
-                        task.blocksHashes.push_back(crc32.checksum());
-                        std::cout << crc32.checksum() << std::endl;
-                        if (task.blocksHashes.size() == task.blocksHashes.capacity())
-                        {
-                            // TODO: handle full
-                        }
-                    }
-
                     break;
                 }
-            });
+                if (m_tasksToProcess.empty())
+                {
+                    m_cond.wait(lock, [&]()
+                    {
+                        return m_exit || !m_tasksToProcess.empty();
+                    });
+                    if (m_exit)
+                    {
+                        break;
+                    }
+                }
 
-        work.join();
+                taskPtr = std::move(m_tasksToProcess.back());
+                m_tasksToProcess.pop_back();
+            }
 
-        m_exit = true;
+            auto& task = *taskPtr;
+
+            // all arithmetic normalized to zero
+            if (!task.currentMapping)
+            {
+                const auto MMapMaxSize = task.stopOffset + (task.stopOffset % task.pageSize); // TODO: find the right value
+//                        const auto MMapMaxSize = 4096; // TODO: find the right value
+
+                const auto initialMappingOffset = task.startOffset - (task.startOffset % task.pageSize);
+                auto* const data = mmap(nullptr, MMapMaxSize, PROT_READ, MAP_PRIVATE, task.inputFileHandle->Get(), initialMappingOffset); // initial mapping
+                if (data == MAP_FAILED)
+                {
+                    // TODO: fail
+                    throw std::runtime_error("mmap failed " + std::to_string(errno));
+                }
+                task.currentMapping = MappedChunk(data, MMapMaxSize);
+                task.currentMappingOffset = initialMappingOffset;
+            }
+
+            for (; task.currentOffset < task.stopOffset; task.currentOffset += task.blockSize)
+            {
+                if (m_stop.load(std::memory_order_acquire))
+                {
+                    // m_exit must be set prior to m_stop
+                    break;
+                }
+
+                boost::crc_32_type crc32;
+
+                const auto currentOffsetEnd = std::min(task.currentOffset + task.blockSize, task.fileSize);
+                for (auto i = task.currentOffset; i < currentOffsetEnd;)
+                {
+                    const auto[data, size] = task.GetPointerToOffset(i); // NOTE: this will be inefficient for small task.blockSize values
+                    const auto bytesToProcess = std::min(currentOffsetEnd - i, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
+                    i += bytesToProcess;
+                    crc32.process_bytes(data, bytesToProcess);
+                }
+
+                task.blocksHashes.push_back(crc32.checksum());
+                if (task.blocksHashes.size() == task.blocksHashes.capacity())
+                {
+                    task.currentOffset += task.blockSize;
+                    {
+                        std::unique_lock lock(m_workingQueuesLock);
+                        m_readyTasks.emplace_back(std::move(taskPtr));
+                    }
+                    m_cond.notify_all(); // todo: introduce another lock?
+                    break;
+                }
+            }
+
+            {
+                std::unique_lock lock(m_workingQueuesLock);
+                m_readyTasks.emplace_back(std::move(taskPtr));
+            }
+            m_cond.notify_all(); // todo: introduce another lock?
+        }
     }
 
 private:
