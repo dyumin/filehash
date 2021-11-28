@@ -22,16 +22,6 @@ using helpers::MappedChunk;
 
 // todo: mmap64
 
-//// my hackerrank solution to https://www.hackerrank.com/challenges/closest-number/problem
-//uintmax_t ClosestNumberMultipleOfX(const uintmax_t targetNumber, const uintmax_t x)
-//{
-//    const auto rem = targetNumber % x;
-//    if (x/2 >= rem)
-//        return targetNumber - rem;
-//    else
-//        return targetNumber - rem + x;
-//}
-
 struct Task final
 {
     std::shared_ptr<FDHandle> inputFileHandle;
@@ -254,23 +244,6 @@ public:
                 .currentMappingOffset = 0});
             m_tasksToProcess.back()->blocksHashes.reserve(BytesToReserve / ElementSize);
 
-            // TODO: dispatch
-
-//            boost::crc_32_type crc32;
-////            crc32.process_bytes(dataChunk, m_blockSize);
-//            auto result = crc32.checksum();
-//
-//            auto* const dataRaw = mmap(nullptr, 4096, PROT_READ, MAP_PRIVATE, m_inputFileHandle.Get(), 4096);
-
-            int i = 0;
-
-//            for (; offset < m_fileSize - threadViewSize; offset += threadViewSize) // full threads
-//            {
-//                std::cout << offset << " to " << offset + threadViewSize << std::endl;
-//            }
-//
-//            auto tail = m_fileSize - offset;
-//            std::cout << offset << " to " << offset + tail << std::endl;
         }
 
         std::thread work(
@@ -346,63 +319,6 @@ public:
             });
 
         work.join();
-
-        // MAP_POPULATE
-//        auto* const dataRaw = mmap(nullptr, m_fileSize, PROT_READ, MAP_PRIVATE, m_inputFileHandle.Get(), 0);
-//        const auto* const data = static_cast<const uint8_t*>(dataRaw);
-//        const uint8_t* const dataEnd = data + m_fileSize;
-//
-//        // PAGE_SIZE
-//
-//        // MAP_POPULATE
-//        auto* const dataRaw2 = mmap(nullptr, 4096, PROT_READ, MAP_PRIVATE, m_inputFileHandle.Get(), 4096);
-//        const auto* const data2 = static_cast<const uint8_t*>(dataRaw2);
-//        const uint8_t* const dataEnd2 = data2 + 4096;
-
-//        auto* const dataRaw = mmap(nullptr, 4096, PROT_READ, MAP_PRIVATE, m_inputFileHandle.Get(), 4096);
-//        auto* const dataRaw2 = mmap(nullptr, 8192, PROT_READ, MAP_PRIVATE, m_inputFileHandle.Get(), 0);
-//         auto* const data = static_cast< uint8_t*>(dataRaw);
-//         auto* const data2 = static_cast< uint8_t*>(dataRaw2);
-//        auto distance = std::distance(data2, data);
-//
-//        data2[1] = '9';
-//        auto resulttt = data2[4095];
-
-//        auto butesToProcess = m_fileSize >
-//        for (auto dataChunk = data; dataChunk != dataEnd; dataChunk+=m_blockSize)
-//        {
-//            boost::crc_32_type crc32;
-//            crc32.process_bytes(dataChunk, m_blockSize);
-//            auto result = crc32.checksum();
-//            std::cout << result << std::endl;
-//        }
-//
-//        for (auto dataChunk = data2; dataChunk != dataEnd2; dataChunk+=m_blockSize)
-//        {
-//            boost::crc_32_type crc32;
-//            crc32.process_bytes(dataChunk, m_blockSize);
-//            auto result = crc32.checksum();
-//            std::cout << result << std::endl;
-//        }
-
-
-//        std::string lol = "111";
-//        boost::crc_32_type crc32;
-//        crc32.process_bytes(lol.data(), lol.size());
-//        auto result = crc32.checksum();
-//        std::cout << result << std::endl;
-
-//        auto error = errno;
-//        auto result = munmap(dataRaw, m_fileSize);
-//        error = errno;
-//        auto result2 = munmap(dataRaw2, 8192);
-//        error = errno;
-//        auto result3 = munmap(dataRaw2, m_fileSize);
-//        error = errno;
-//        auto result4 = munmap(dataRaw2, m_fileSize);
-//        error = errno;
-
-//        std::cout << 1 << std::endl;
 
         m_exit = true;
     }
