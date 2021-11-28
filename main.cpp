@@ -22,21 +22,97 @@ using helpers::MappedChunk;
 
 // todo: mmap64
 
+//// my hackerrank solution to https://www.hackerrank.com/challenges/closest-number/problem
+//uintmax_t ClosestNumberMultipleOfX(const uintmax_t targetNumber, const uintmax_t x)
+//{
+//    const auto rem = targetNumber % x;
+//    if (x/2 >= rem)
+//        return targetNumber - rem;
+//    else
+//        return targetNumber - rem + x;
+//}
+
 struct Task final
 {
+    std::shared_ptr<FDHandle> inputFileHandle;
     const uintmax_t fileSize;
     const uintmax_t blockSize;
     const long int pageSize;
 
-    const uintmax_t startOffset; // from file start
-    const uintmax_t stopOffset; // from file start
+    const uintmax_t startOffset; // from file start // aligned by blockSize
+    const uintmax_t stopOffset; // from file start // aligned by blockSize except the tail
 
-    uintmax_t currentOffset; // from file start
+    uintmax_t currentOffset; // from file start // aligned by blockSize
 
-    uintmax_t currentMappingOffset; // from file start
+    uintmax_t currentMappingOffset; // from file start // aligned by pageSize
     MappedChunk currentMapping;
 
-    std::vector<boost::crc_32_type::value_type> hash;
+    std::vector<boost::crc_32_type::value_type> blocksHashes;
+
+    // precondition: offset may only be incremented for successive calls
+    std::pair<void*, size_t> GetPointerToOffset(const uintmax_t offset)
+    {
+        const auto& getPointer = []()
+        {
+
+        };
+
+//        if () //TODO: throw maybe?
+        const auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
+        if (offset < mappingOffsetEnd) // TODO: check boundaries
+        {
+            const size_t pointerOffset = offset - currentMappingOffset;
+            const size_t size = mappingOffsetEnd - (currentMappingOffset + pointerOffset);
+
+            auto* pointer = static_cast<uint8_t*>(currentMapping.Data());
+            pointer += pointerOffset;
+
+            return std::make_pair(pointer, size);
+        }
+        else // remap
+        {
+            const uintmax_t oldMappingSize = currentMapping.Size(); // will be multiple of page size except for the tail
+            currentMapping.Reset();
+
+            currentMappingOffset += oldMappingSize;
+
+            const uintmax_t remainingFileSize = fileSize - currentMappingOffset; // TODO: if zero?
+            size_t mappingSize = 0;
+            if (oldMappingSize > remainingFileSize)
+            {
+                mappingSize = remainingFileSize;
+            }
+            else
+            {
+                mappingSize = oldMappingSize;
+            }
+//            const size_t mappingSize = std::min(oldMappingSize, remainingFileSize);
+            auto* const data = mmap64(nullptr, mappingSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), currentMappingOffset); // initial mapping
+            if (data == MAP_FAILED)
+            {
+                //TODO: handle errors
+            }
+
+            currentMapping = helpers::MappedChunk(data, mappingSize);
+
+            const auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
+            if (offset < mappingOffsetEnd) // TODO: check boundaries
+            {
+                const size_t pointerOffset = offset - currentMappingOffset;
+                const size_t size = mappingOffsetEnd - (currentMappingOffset + pointerOffset);
+
+                auto* pointer = static_cast<uint8_t*>(currentMapping.Data());
+                pointer += pointerOffset;
+
+                return std::make_pair(pointer, size);
+            }
+            else
+            {
+                // TODO: handle
+                throw std::runtime_error("offset < mappingOffsetEnd");
+            }
+        }
+    }
 };
 
 class FileHash final
@@ -44,7 +120,7 @@ class FileHash final
 public:
     FileHash(const std::filesystem::path& inputFile, std::filesystem::path outputFile, const uintmax_t blockSize) : m_outputFile(std::move(outputFile)), m_blockSize(blockSize)
     {
-        m_inputFileHandle = FDHandle(open(inputFile.c_str(), O_RDONLY)); // TODO: O_LARGEFILE, open64?
+        m_inputFileHandle = std::make_shared<FDHandle>(open(inputFile.c_str(), O_RDONLY)); // TODO: O_LARGEFILE, open64?
         if (!m_inputFileHandle)
         {
             const auto errnoCopy = errno;
@@ -106,10 +182,25 @@ public:
             threadsCount = 1;
         }
 
+        // TODO: determine dynamically
+        constexpr auto BytesToReserve = (size_t) 1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
+        constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocksHashes)::value_type);
+
         if (chunks == 0 || (chunks == 1 && (m_fileSize % m_blockSize) == 0) || threadsCount == 1)
         {
             // single thread
             std::cout << "single thread" << std::endl;
+            // Todo: single thread should not wait for the writer thread
+            m_tasksToProcess.emplace_back(new Task{
+                .inputFileHandle = m_inputFileHandle,
+                .fileSize = m_fileSize,
+                .blockSize = m_blockSize,
+                .pageSize = threadDispatchThreshold,
+                .startOffset = 0,
+                .stopOffset = m_fileSize,
+                .currentOffset = 0,
+                .currentMappingOffset = 0});
+            m_tasksToProcess.back()->blocksHashes.reserve(BytesToReserve / ElementSize);
         }
         else
         {
@@ -129,39 +220,39 @@ public:
                 threadsCount++;
             }
 
-            // TODO: determine dynamically
-            constexpr auto BytesToReserve = (size_t) 1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
-            constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->hash)::value_type);
-
             // dispatch fully loaded threads
             uintmax_t offset = 0;
             for (int i = 1; i < threadsCount; ++i)
             {
                 std::cout << offset << " to " << offset + threadViewSize << std::endl;
-                offset = threadViewSize * i;
-
-                m_tasksToProcess.emplace_back(Task{.fileSize = m_fileSize,
+                m_tasksToProcess.emplace_back(new Task{
+                    .inputFileHandle = m_inputFileHandle,
+                    .fileSize = m_fileSize,
                     .blockSize = m_blockSize,
                     .pageSize = threadDispatchThreshold,
                     .startOffset = offset,
                     .stopOffset = offset + threadViewSize,
-                    .currentOffset = 0,
+                    .currentOffset = offset,
                     .currentMappingOffset = 0});
-                m_tasksToProcess.back().hash.reserve(BytesToReserve / ElementSize);
+                m_tasksToProcess.back()->blocksHashes.reserve(BytesToReserve / ElementSize);
+
+                offset = threadViewSize * i;
             }
 
             // TODO: what if there will be dead tasks?
             // dispatch tail processing thread
             const auto tail = m_fileSize - offset;
             std::cout << offset << " to " << offset + tail << std::endl;
-            m_tasksToProcess.emplace_back(Task{.fileSize = m_fileSize,
+            m_tasksToProcess.emplace_back(new Task{
+                .inputFileHandle = m_inputFileHandle,
+                .fileSize = m_fileSize,
                 .blockSize = m_blockSize,
                 .pageSize = threadDispatchThreshold,
                 .startOffset = offset,
                 .stopOffset = offset + tail,
-                .currentOffset = 0,
+                .currentOffset = offset,
                 .currentMappingOffset = 0});
-            m_tasksToProcess.back().hash.reserve(BytesToReserve / ElementSize);
+            m_tasksToProcess.back()->blocksHashes.reserve(BytesToReserve / ElementSize);
 
             // TODO: dispatch
 
@@ -181,6 +272,80 @@ public:
 //            auto tail = m_fileSize - offset;
 //            std::cout << offset << " to " << offset + tail << std::endl;
         }
+
+        std::thread work(
+            [&]()
+            {
+                std::unique_ptr<Task> taskPtr;
+                while (1)
+                {
+                    {
+                        std::unique_lock lock(m_workingQueuesLock);
+                        if (m_exit)
+                        {
+                            break;
+                        }
+                        if (m_tasksToProcess.empty())
+                        {
+                            m_cond.wait(lock, [&]()
+                            {
+                                return m_exit || !m_tasksToProcess.empty();
+                            });
+                            if (m_exit)
+                            {
+                                break;
+                            }
+                        }
+
+                        taskPtr = std::move(m_tasksToProcess.back()); // TODO: back
+//                        m_tasksToProcess.po
+                    }
+
+                    auto& task = *taskPtr;
+
+                    // all arithmetic normalized to zero
+                    if (!task.currentMapping)
+                    {
+                        const auto MMapMaxSize = task.stopOffset + (task.stopOffset % task.pageSize); // TODO: find the right value
+//                        const auto MMapMaxSize = 4096; // TODO: find the right value
+
+                        const auto initialMappingOffset = task.startOffset - (task.startOffset % task.pageSize);
+                        auto* const data = mmap(nullptr, MMapMaxSize, PROT_READ, MAP_PRIVATE, task.inputFileHandle->Get(), initialMappingOffset); // initial mapping
+                        if (data == MAP_FAILED)
+                        {
+                            // TODO: fail
+                            throw std::runtime_error("mmap failed " + std::to_string(errno));
+                        }
+                        task.currentMapping = MappedChunk(data, MMapMaxSize);
+                        task.currentMappingOffset = initialMappingOffset;
+                    }
+
+                    for (; task.currentOffset < task.stopOffset; task.currentOffset += task.blockSize)
+                    {
+                        boost::crc_32_type crc32;
+
+                        const auto currentOffsetEnd = std::min(task.currentOffset + task.blockSize, task.fileSize);
+                        for (auto i = task.currentOffset; i < currentOffsetEnd;)
+                        {
+                            const auto[data, size] = task.GetPointerToOffset(i); // NOTE: this will be inefficient for small task.blockSize values
+                            const auto bytesToProcess = std::min(currentOffsetEnd - i, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
+                            i += bytesToProcess;
+                            crc32.process_bytes(data, bytesToProcess);
+                        }
+
+                        task.blocksHashes.push_back(crc32.checksum());
+                        std::cout << crc32.checksum() << std::endl;
+                        if (task.blocksHashes.size() == task.blocksHashes.capacity())
+                        {
+                            // TODO: handle full
+                        }
+                    }
+
+                    break;
+                }
+            });
+
+        work.join();
 
         // MAP_POPULATE
 //        auto* const dataRaw = mmap(nullptr, m_fileSize, PROT_READ, MAP_PRIVATE, m_inputFileHandle.Get(), 0);
@@ -238,13 +403,15 @@ public:
 //        error = errno;
 
 //        std::cout << 1 << std::endl;
+
+        m_exit = true;
     }
 
 private:
     const std::filesystem::path m_outputFile;
     /* const */ uintmax_t m_blockSize;
 
-    FDHandle m_inputFileHandle;
+    std::shared_ptr<FDHandle> m_inputFileHandle;
     FDHandle m_outputFileHandle;
 
     uintmax_t m_fileSize = 0;
@@ -256,8 +423,8 @@ private:
     std::condition_variable m_cond;
     std::mutex m_workingQueuesLock;
     bool m_exit = false;
-    std::vector<Task> m_tasksToProcess;
-    std::vector<Task> m_readyTasks;
+    std::vector<std::unique_ptr<Task>> m_tasksToProcess;
+    std::vector<std::unique_ptr<Task>> m_readyTasks;
 };
 
 int main(int argc, char* argv[])
