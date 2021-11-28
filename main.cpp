@@ -393,7 +393,7 @@ public:
                 if (data == MAP_FAILED)
                 {
                     // TODO: fail
-                    throw std::runtime_error("mmap failed " + std::to_string(errno));
+                    throw std::runtime_error("mmap64 failed " + std::to_string(errno));
                 }
                 const auto adviseResult = madvise(data, MMapMaxSize, MADV_SEQUENTIAL);
                 if (adviseResult == -1)
