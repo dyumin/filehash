@@ -1,5 +1,4 @@
 #include "mapped_chunk.h"
-
 #include "fdhandle.h"
 
 #include <boost/program_options/options_description.hpp>
@@ -14,8 +13,10 @@
 #include <atomic>
 #include <condition_variable>
 
-#include <fcntl.h>
-#include <sys/mman.h>
+#include <fcntl.h> // open
+#include <sys/mman.h> // mmap
+#include <unistd.h> // sysconf
+#include <sys/types.h>
 
 using helpers::FDHandle;
 using helpers::MappedChunk;
@@ -42,11 +43,6 @@ struct Task final
     // precondition: offset may only be incremented for successive calls
     std::pair<void*, size_t> GetPointerToOffset(const uintmax_t offset)
     {
-        const auto& getPointer = []()
-        {
-
-        };
-
 //        if () //TODO: throw maybe?
         const auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
         if (offset < mappingOffsetEnd) // TODO: check boundaries
@@ -256,7 +252,11 @@ public:
                                                        HashThreadBody();
                                                    }));
             }
-            // todo: dispatch writing
+
+            m_workers.emplace_back(std::thread([&]()
+                                               {
+                                                   WritingThreadBody();
+                                               }));
         }
 
         m_cond.notify_all();
@@ -264,6 +264,84 @@ public:
         for (auto& worker: m_workers)
         {
             worker.join();
+        }
+    }
+
+    [[noreturn]] void WritingThreadBody()
+    {
+        const auto chunksNumber = (m_fileSize / m_blockSize) + !!(m_fileSize % m_blockSize);
+        constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocksHashes)::value_type);
+        const auto fileSize = chunksNumber * ElementSize;
+
+        const auto result = ftruncate64(m_outputFileHandle.Get(), fileSize);
+        if (result == -1)
+        {
+            throw std::runtime_error("ftruncate64 failed " + std::to_string(errno));
+        }
+
+        std::unique_ptr<Task> readyTask;
+        std::unique_ptr<Task> taskToHash;
+        while (1)
+        {
+            {
+                std::unique_lock lock(m_workingQueuesLock);
+                if (taskToHash)
+                {
+                    m_tasksToProcess.emplace_back(std::move(taskToHash));
+                    /**
+                     * The notifying thread does not need to hold the lock on the same mutex as the one held by the waiting thread(s);
+                     * in fact doing so is a pessimization, since the notified thread would immediately block again,
+                     * waiting for the notifying thread to release the lock.
+                     * However, some implementations (in particular many implementations of pthreads) recognize this situation
+                     * and avoid this "hurry up and wait" scenario by transferring the waiting thread from the condition variable's queue
+                     * directly to the queue of the mutex within the notify call, without waking it up.
+                     */
+                    m_cond.notify_one();
+                }
+                if (m_exit)
+                {
+                    break;
+                }
+                if (m_readyTasks.empty())
+                {
+                    m_cond.wait(lock, [&]()
+                    {
+                        return m_exit || !m_readyTasks.empty();
+                    });
+                    if (m_exit)
+                    {
+                        break;
+                    }
+                }
+
+                readyTask = std::move(m_readyTasks.back());
+                m_readyTasks.pop_back();
+            }
+
+            auto& task = *readyTask;
+
+            uint32_t lol = task.blocksHashes.front();
+            std::cout <<  task.blocksHashes.front() << std::endl;
+
+            const auto nextHashIndex = task.currentOffset / task.blockSize + !!(task.currentOffset % task.blockSize);
+            const auto hashFileOffset = (nextHashIndex - task.blocksHashes.size()) * ElementSize;
+            const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * ElementSize, hashFileOffset);
+
+            const auto syncResult = fdatasync(m_outputFileHandle.Get());
+            if (numWritten == -1)
+            {
+                throw std::runtime_error("pwrite64 failed" + std::to_string(errno));
+            }
+            task.blocksHashes.clear();
+
+            if (task.currentOffset != task.stopOffset)
+            {
+                taskToHash = std::move(readyTask);
+            }
+            else
+            {
+                std::cout << "done " << task.startOffset << " to " << task.stopOffset << std::endl;
+            }
         }
     }
 
@@ -313,29 +391,31 @@ public:
                 task.currentMappingOffset = initialMappingOffset;
             }
 
-            for (; task.currentOffset < task.stopOffset; task.currentOffset += task.blockSize)
+            for (; task.currentOffset < task.stopOffset;)
             {
                 if (m_stop.load(std::memory_order_acquire))
                 {
                     // m_exit must be set prior to m_stop
+                    // todo: move to internal loop
                     break;
                 }
 
                 boost::crc_32_type crc32;
 
                 const auto currentOffsetEnd = std::min(task.currentOffset + task.blockSize, task.fileSize);
-                for (auto i = task.currentOffset; i < currentOffsetEnd;)
+                auto i = task.currentOffset;
+                for (; i < currentOffsetEnd;)
                 {
                     const auto[data, size] = task.GetPointerToOffset(i); // NOTE: this will be inefficient for small task.blockSize values
                     const auto bytesToProcess = std::min(currentOffsetEnd - i, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
                     i += bytesToProcess;
+                    task.currentOffset += bytesToProcess;
                     crc32.process_bytes(data, bytesToProcess);
                 }
 
                 task.blocksHashes.push_back(crc32.checksum());
                 if (task.blocksHashes.size() == task.blocksHashes.capacity())
                 {
-                    task.currentOffset += task.blockSize;
                     {
                         std::unique_lock lock(m_workingQueuesLock);
                         m_readyTasks.emplace_back(std::move(taskPtr));
@@ -343,6 +423,11 @@ public:
                     m_cond.notify_all(); // todo: introduce another lock?
                     break;
                 }
+            }
+
+            if (task.currentOffset != task.stopOffset)
+            {
+                throw std::logic_error("task.currentOffset != task.stopOffset");
             }
 
             {
