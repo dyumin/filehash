@@ -135,7 +135,7 @@ public:
         }
 
         std::filesystem::remove(m_outputFile, ec); // ignore error
-        m_outputFileHandle = FDHandle(open(m_outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC)); // TODO: O_LARGEFILE, open64?
+        m_outputFileHandle = FDHandle(open(m_outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP)); // TODO: O_LARGEFILE, open64?
         if (!m_outputFileHandle)
         {
             const auto errnoCopy = errno;
