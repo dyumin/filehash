@@ -2,6 +2,7 @@
 #define FILEHASH_FDHANDLE_H
 
 #include <boost/noncopyable.hpp>
+#include <unistd.h>
 
 namespace helpers {
 

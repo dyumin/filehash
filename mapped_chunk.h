@@ -2,7 +2,7 @@
 #define FILEHASH_MAPPED_CHUNK_H
 
 #include <boost/noncopyable.hpp>
-#include <sys/mman.h>
+#include <sys/mman.h> // munmap
 #include <tuple>
 
 namespace helpers {
