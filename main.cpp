@@ -77,6 +77,13 @@ struct Task final
             if (data == MAP_FAILED)
             {
                 //TODO: handle errors
+                throw std::runtime_error("mmap64 failed " + std::to_string(errno));
+            }
+            const auto adviseResult = madvise(data, mappingSize, MADV_SEQUENTIAL);
+            if (adviseResult == -1)
+            {
+                // TODO: fail
+                throw std::runtime_error("madvise failed " + std::to_string(errno));
             }
 
             currentMapping = helpers::MappedChunk(data, mappingSize);
@@ -100,6 +107,8 @@ struct Task final
         }
     }
 };
+
+constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocksHashes)::value_type);
 
 class FileHash final
 {
@@ -149,6 +158,16 @@ public:
 
     void Run()
     {
+        const auto chunksNumber = (m_fileSize / m_blockSize) + !!(m_fileSize % m_blockSize);
+
+        const auto fileSize = chunksNumber * ElementSize;
+
+        const auto result = ftruncate64(m_outputFileHandle.Get(), fileSize);
+        if (result == -1)
+        {
+            throw std::runtime_error("ftruncate64 failed " + std::to_string(errno));
+        }
+
         /* const */ auto hardwareThreadsCount = std::thread::hardware_concurrency() > 0 ? std::thread::hardware_concurrency() : 1;
 
 //        m_fileSize = 139;
@@ -170,8 +189,6 @@ public:
 
         // TODO: determine dynamically
         constexpr auto BytesToReserve = (size_t) 1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
-        constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocksHashes)::value_type);
-
         if (chunks == 0 || (chunks == 1 && (m_fileSize % m_blockSize) == 0) || threadsCount == 1)
         {
             // single thread
@@ -253,13 +270,17 @@ public:
                                                    }));
             }
 
-            m_workers.emplace_back(std::thread([&]()
-                                               {
-                                                   WritingThreadBody();
-                                               }));
+            const auto writersCount = m_workers.size() / 2 + !!(m_workers.size() % 2);
+            for (auto i = 0; i < writersCount; i++)
+            {
+                m_workers.emplace_back(std::thread([&]()
+                                                   {
+                                                       WritingThreadBody();
+                                                   }));
+            }
         }
 
-        m_cond.notify_all();
+        m_hashersCond.notify_all();
 
         for (auto& worker: m_workers)
         {
@@ -267,21 +288,11 @@ public:
         }
     }
 
-    [[noreturn]] void WritingThreadBody()
+    void WritingThreadBody()
     {
-        const auto chunksNumber = (m_fileSize / m_blockSize) + !!(m_fileSize % m_blockSize);
-        constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocksHashes)::value_type);
-        const auto fileSize = chunksNumber * ElementSize;
-
-        const auto result = ftruncate64(m_outputFileHandle.Get(), fileSize);
-        if (result == -1)
-        {
-            throw std::runtime_error("ftruncate64 failed " + std::to_string(errno));
-        }
-
         std::unique_ptr<Task> readyTask;
         std::unique_ptr<Task> taskToHash;
-        while (1)
+        while (true)
         {
             {
                 std::unique_lock lock(m_workingQueuesLock);
@@ -296,7 +307,7 @@ public:
                      * and avoid this "hurry up and wait" scenario by transferring the waiting thread from the condition variable's queue
                      * directly to the queue of the mutex within the notify call, without waking it up.
                      */
-                    m_cond.notify_one();
+                    m_hashersCond.notify_one();
                 }
                 if (m_exit)
                 {
@@ -304,7 +315,7 @@ public:
                 }
                 if (m_readyTasks.empty())
                 {
-                    m_cond.wait(lock, [&]()
+                    m_writersCond.wait(lock, [&]()
                     {
                         return m_exit || !m_readyTasks.empty();
                     });
@@ -320,14 +331,11 @@ public:
 
             auto& task = *readyTask;
 
-            uint32_t lol = task.blocksHashes.front();
-            std::cout <<  task.blocksHashes.front() << std::endl;
-
             const auto nextHashIndex = task.currentOffset / task.blockSize + !!(task.currentOffset % task.blockSize);
             const auto hashFileOffset = (nextHashIndex - task.blocksHashes.size()) * ElementSize;
             const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * ElementSize, hashFileOffset);
 
-            const auto syncResult = fdatasync(m_outputFileHandle.Get());
+//            const auto syncResult = fdatasync(m_outputFileHandle.Get());
             if (numWritten == -1)
             {
                 throw std::runtime_error("pwrite64 failed" + std::to_string(errno));
@@ -348,7 +356,7 @@ public:
     void HashThreadBody()
     {
         std::unique_ptr<Task> taskPtr;
-        while (1)
+        while (true)
         {
             {
                 std::unique_lock lock(m_workingQueuesLock);
@@ -358,7 +366,7 @@ public:
                 }
                 if (m_tasksToProcess.empty())
                 {
-                    m_cond.wait(lock, [&]()
+                    m_hashersCond.wait(lock, [&]()
                     {
                         return m_exit || !m_tasksToProcess.empty();
                     });
@@ -381,11 +389,17 @@ public:
 //                        const auto MMapMaxSize = 4096; // TODO: find the right value
 
                 const auto initialMappingOffset = task.startOffset - (task.startOffset % task.pageSize);
-                auto* const data = mmap(nullptr, MMapMaxSize, PROT_READ, MAP_PRIVATE, task.inputFileHandle->Get(), initialMappingOffset); // initial mapping
+                auto* const data = mmap64(nullptr, MMapMaxSize, PROT_READ, MAP_PRIVATE, task.inputFileHandle->Get(), initialMappingOffset); // initial mapping
                 if (data == MAP_FAILED)
                 {
                     // TODO: fail
                     throw std::runtime_error("mmap failed " + std::to_string(errno));
+                }
+                const auto adviseResult = madvise(data, MMapMaxSize, MADV_SEQUENTIAL);
+                if (adviseResult == -1)
+                {
+                    // TODO: fail
+                    throw std::runtime_error("madvise failed " + std::to_string(errno));
                 }
                 task.currentMapping = MappedChunk(data, MMapMaxSize);
                 task.currentMappingOffset = initialMappingOffset;
@@ -416,25 +430,15 @@ public:
                 task.blocksHashes.push_back(crc32.checksum());
                 if (task.blocksHashes.size() == task.blocksHashes.capacity())
                 {
-                    {
-                        std::unique_lock lock(m_workingQueuesLock);
-                        m_readyTasks.emplace_back(std::move(taskPtr));
-                    }
-                    m_cond.notify_all(); // todo: introduce another lock?
                     break;
                 }
-            }
-
-            if (task.currentOffset != task.stopOffset)
-            {
-                throw std::logic_error("task.currentOffset != task.stopOffset");
             }
 
             {
                 std::unique_lock lock(m_workingQueuesLock);
                 m_readyTasks.emplace_back(std::move(taskPtr));
             }
-            m_cond.notify_all(); // todo: introduce another lock?
+            m_writersCond.notify_one();
         }
     }
 
@@ -451,7 +455,8 @@ private:
     std::atomic<bool> m_stop = {false}; // TODO: later
     std::vector<std::thread> m_workers;
 
-    std::condition_variable m_cond;
+    std::condition_variable m_hashersCond;
+    std::condition_variable m_writersCond;
     std::mutex m_workingQueuesLock;
     bool m_exit = false;
     std::vector<std::unique_ptr<Task>> m_tasksToProcess;
