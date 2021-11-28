@@ -121,7 +121,7 @@ public:
     FileHash(const std::filesystem::path& inputFile, std::filesystem::path outputFile, const uintmax_t blockSize) : m_outputFile(std::move(outputFile)), m_blockSize(blockSize)
     {
         m_inputFileHandle = std::make_shared<FDHandle>(open(inputFile.c_str(), O_RDONLY)); // TODO: O_LARGEFILE, open64?
-        if (!m_inputFileHandle)
+        if (!m_inputFileHandle->operator bool())
         {
             const auto errnoCopy = errno;
             throw std::runtime_error(std::string("Failed to open inputFile ") + inputFile.string() + ", errno = " + std::to_string(errnoCopy));
