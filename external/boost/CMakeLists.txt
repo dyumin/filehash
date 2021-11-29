@@ -1,6 +1,7 @@
 include(ExternalProject)
 
-set(BOOST_VERSION_STRING "1.76.0")
+set(BOOST_VERSION_STRING "1.77.0")
+set(BOOST_HASH "5347464af5b14ac54bb945dc68f1dd7c56f0dad7262816b956138fc53bcc0131")
 
 set(BOOST_COMPONENTS
     # chrono
@@ -13,7 +14,8 @@ set(BOOST_COMPONENTS
     # thread
     )
 string(REPLACE "." "_" BOOST_VERSION_UNDERSCORED ${BOOST_VERSION_STRING})
-set(BOOST_URL "${CMAKE_CURRENT_LIST_DIR}/boost_${BOOST_VERSION_UNDERSCORED}.tar.gz")
+#set(BOOST_URL "${CMAKE_CURRENT_LIST_DIR}/boost_${BOOST_VERSION_UNDERSCORED}.tar.gz") # GitHub blocks pushes that exceed 100 MB.
+set(BOOST_URL "https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION_STRING}/source/boost_${BOOST_VERSION_UNDERSCORED}.tar.gz")
 set(BOOST_SOURCE_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/boost")
 set(BOOST_BUILD_ROOT_DIR "${BOOST_SOURCE_TARGET_DIR}/src/boost")
 
@@ -62,6 +64,7 @@ ExternalProject_Add(boost
     INSTALL_DIR ${EXTERNAL_PREFIX_DIR}
     BINARY_DIR ${BOOST_BUILD_ROOT_DIR}
     URL ${BOOST_URL}
+    URL_HASH SHA256=${BOOST_HASH}
     CONFIGURE_COMMAND ${BOOST_BOOTSTRAP_SCRIPT}
     BUILD_COMMAND ${BOOST_BUILD_CMD}
     INSTALL_COMMAND ""  # installation is done as part of the build
