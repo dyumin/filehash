@@ -334,7 +334,7 @@ public:
                 }
                 if (m_exit)
                 {
-                    break;
+                    return;
                 }
                 if (m_readyTasks.empty())
                 {
@@ -344,7 +344,7 @@ public:
                     });
                     if (m_exit)
                     {
-                        break;
+                        return;
                     }
                 }
 
@@ -400,7 +400,7 @@ public:
                 std::unique_lock lock(m_workingQueuesLock);
                 if (m_exit)
                 {
-                    break;
+                    return;
                 }
                 if (m_tasksToProcess.empty())
                 {
@@ -410,7 +410,7 @@ public:
                     });
                     if (m_exit)
                     {
-                        break;
+                        return;
                     }
                 }
 
