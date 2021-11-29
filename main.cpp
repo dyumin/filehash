@@ -113,7 +113,7 @@ constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocks
 class FileHash final
 {
 public:
-    FileHash(const std::filesystem::path& inputFile, std::filesystem::path outputFile, const uintmax_t blockSize) : m_outputFile(std::move(outputFile)), m_blockSize(blockSize)
+    FileHash(const std::filesystem::path& inputFile, const std::filesystem::path& outputFile, const uintmax_t blockSize) : m_outputFile(outputFile), m_blockSize(blockSize)
     {
         m_inputFileHandle = std::make_shared<FDHandle>(open(inputFile.c_str(), O_RDONLY)); // TODO: O_LARGEFILE, open64?
         if (!m_inputFileHandle->operator bool())
@@ -139,7 +139,14 @@ public:
 
     ~FileHash()
     {
-//        m_stop.store(true, std::memory_order_release);
+        {
+            std::unique_lock lock(m_workingQueuesLock);
+            m_exit = true;
+        }
+
+        m_hashersCond.notify_all();
+        m_writersCond.notify_all();
+
         for (auto& worker: m_workers)
         {
             if (worker.joinable())
@@ -152,6 +159,10 @@ public:
         {
             std::error_code ec;
             std::filesystem::remove(m_outputFile, ec); // ignore error
+        }
+        else
+        {
+            fdatasync(m_outputFileHandle.Get()); // ignore error
         }
     }
 
@@ -288,16 +299,6 @@ public:
         });
 
         std::cout << "will exit" << std::endl;
-
-        m_exit = true;
-        m_workingQueuesLock.unlock();
-        m_hashersCond.notify_all();
-        m_writersCond.notify_all();
-
-        for (auto& worker : m_workers) // TODO
-        {
-            worker.join();
-        }
     }
 
     void WritingThreadBody()
@@ -347,7 +348,6 @@ public:
             const auto hashFileOffset = (nextHashIndex - task.blocksHashes.size()) * ElementSize;
             const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * ElementSize, hashFileOffset);
 
-//            const auto syncResult = fdatasync(m_outputFileHandle.Get());
             if (numWritten == -1)
             {
                 throw std::runtime_error("pwrite64 failed" + std::to_string(errno));
@@ -465,7 +465,7 @@ public:
 
 private:
     const std::filesystem::path m_outputFile;
-    /* const */ uintmax_t m_blockSize;
+    const uintmax_t m_blockSize;
 
     std::shared_ptr<FDHandle> m_inputFileHandle;
     FDHandle m_outputFileHandle;
