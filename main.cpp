@@ -6,6 +6,8 @@
 #include <boost/program_options/parsers.hpp>
 #include <boost/crc.hpp>
 
+#include <optional>
+#include <chrono>
 #include <iostream>
 #include <filesystem>
 #include <thread>
@@ -21,10 +23,15 @@
 using helpers::FDHandle;
 using helpers::MappedChunk;
 
-// todo: mmap64
+// defines and global variables are bad, but let's make these since stream synchronisation is not the main purpose of this task
+// std::osyncstream is available in std 20
+std::mutex LogLock;
+#define log for(auto lock57567333 = std::unique_lock(LogLock); lock57567333.owns_lock(); std::unique_lock(std::move(lock57567333)) /*NOLINT(bugprone-use-after-move)*/) \
+            std::cout
 
 struct Task final
 {
+    std::optional<std::chrono::time_point<std::chrono::steady_clock>> hashStartTimepoint;
     std::shared_ptr<FDHandle> inputFileHandle;
     const uintmax_t fileSize;
     const uintmax_t blockSize;
@@ -162,6 +169,11 @@ public:
         }
         else
         {
+            // duration includes time spend writing to output and all the shutdown sequence
+            const auto duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_hashStartTimepoint); // seconds with double rep
+            log << "File processed in " << duration.count() << " seconds; "
+                << (double) m_fileSize / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
+
             fdatasync(m_outputFileHandle.Get()); // ignore error
         }
     }
@@ -202,9 +214,9 @@ public:
         if (chunks == 0 || (chunks == 1 && (m_fileSize % m_blockSize) == 0) || threadsCount == 1)
         {
             // single thread
-            std::cout << "single thread" << std::endl;
             // Todo: single thread should not wait for the writer thread
             m_tasksToProcess.emplace_back(new Task{
+                .hashStartTimepoint = {},
                 .inputFileHandle = m_inputFileHandle,
                 .fileSize = m_fileSize,
                 .blockSize = m_blockSize,
@@ -237,8 +249,8 @@ public:
             uintmax_t offset = 0;
             for (int i = 1; i < threadsCount; ++i)
             {
-                std::cout << offset << " to " << offset + threadViewSize << std::endl;
                 m_tasksToProcess.emplace_back(new Task{
+                    .hashStartTimepoint = {},
                     .inputFileHandle = m_inputFileHandle,
                     .fileSize = m_fileSize,
                     .blockSize = m_blockSize,
@@ -255,8 +267,8 @@ public:
             // TODO: what if there will be dead tasks?
             // dispatch tail processing thread
             const auto tail = m_fileSize - offset;
-            std::cout << offset << " to " << offset + tail << std::endl;
             m_tasksToProcess.emplace_back(new Task{
+                .hashStartTimepoint = {},
                 .inputFileHandle = m_inputFileHandle,
                 .fileSize = m_fileSize,
                 .blockSize = m_blockSize,
@@ -297,8 +309,6 @@ public:
         {
             return m_remainingTasks == 0; // TODO: m_stop
         });
-
-        std::cout << "will exit" << std::endl;
     }
 
     void WritingThreadBody()
@@ -360,6 +370,15 @@ public:
             }
             else
             {
+                if (task.currentOffset == task.stopOffset)
+                {
+                    const auto duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - task.hashStartTimepoint.value()); // seconds with double rep
+
+                    // duration includes time spend writing to output
+                    log << "Chunk from " << task.startOffset << " to " << task.stopOffset
+                        << " took " << duration.count() << " seconds; "
+                        << (double) (task.stopOffset - task.startOffset) / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
+                }
                 {
                     std::unique_lock lock(m_workingQueuesLock);
                     if (--m_remainingTasks == 0)
@@ -368,8 +387,6 @@ public:
                         m_controlThreadCond.notify_one();
                     }
                 }
-
-                std::cout << "done " << task.startOffset << " to " << task.stopOffset << std::endl;
             }
         }
     }
@@ -402,6 +419,11 @@ public:
             }
 
             auto& task = *taskPtr;
+
+            if (!task.hashStartTimepoint)
+            {
+                task.hashStartTimepoint = std::chrono::steady_clock::now();
+            }
 
             // all arithmetic normalized to zero
             if (!task.currentMapping)
@@ -464,6 +486,7 @@ public:
     }
 
 private:
+    const std::chrono::time_point<std::chrono::steady_clock> m_hashStartTimepoint = std::chrono::steady_clock::now(); // default-initialized for simplicity
     const std::filesystem::path m_outputFile;
     const uintmax_t m_blockSize;
 
