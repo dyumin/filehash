@@ -31,9 +31,9 @@ struct Task final
     const long int pageSize;
 
     const uintmax_t startOffset; // from file start // aligned by blockSize
-    const uintmax_t stopOffset; // from file start // aligned by blockSize except the tail
+    const uintmax_t stopOffset; // from file start // aligned by blockSize except for the tail
 
-    uintmax_t currentOffset; // from file start // aligned by blockSize
+    uintmax_t currentOffset; // from file start // aligned by blockSize except for the tail
 
     uintmax_t currentMappingOffset; // from file start // aligned by pageSize
     MappedChunk currentMapping;
@@ -129,7 +129,6 @@ public:
             throw std::runtime_error(std::string("inputFile ") + m_outputFile.string() + " size is zero, no hash to calculate");
         }
 
-        std::filesystem::remove(m_outputFile, ec); // ignore error
         m_outputFileHandle = FDHandle(open(m_outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)); // TODO: O_LARGEFILE, open64?
         if (!m_outputFileHandle)
         {
@@ -140,7 +139,7 @@ public:
 
     ~FileHash()
     {
-        m_stop.store(true, std::memory_order_release);
+//        m_stop.store(true, std::memory_order_release);
         for (auto& worker: m_workers)
         {
             if (worker.joinable())
@@ -215,7 +214,7 @@ public:
             threadsCount = std::min(threadsCount, maxNumberOfThreadForFile);
 
             const auto fullChunksPerThread = chunks / threadsCount;
-            const uintmax_t threadViewSize = fullChunksPerThread * m_blockSize; // aligned by m_blockSize, except for tail
+            const uintmax_t threadViewSize = fullChunksPerThread * m_blockSize; // aligned by m_blockSize, except for the tail
 
             // add tail processing thread if tail is at least the size of threadDispatchThreshold
             if (threadsCount < hardwareThreadsCount && ((m_fileSize % m_blockSize) > threadDispatchThreshold)) //TODO: check
@@ -259,9 +258,11 @@ public:
 
         }
 
+        std::unique_lock lock(m_workingQueuesLock);
+        m_remainingTasks = m_tasksToProcess.size();
+
         m_workers.reserve(m_tasksToProcess.size());
         {
-            std::unique_lock lock(m_workingQueuesLock);
             for (auto i = 0; i < m_tasksToProcess.size(); i++)
             {
                 m_workers.emplace_back(std::thread([&]()
@@ -281,8 +282,19 @@ public:
         }
 
         m_hashersCond.notify_all();
+        m_controlThreadCond.wait(lock, [&]()
+        {
+            return m_remainingTasks == 0; // TODO: m_stop
+        });
 
-        for (auto& worker: m_workers)
+        std::cout << "will exit" << std::endl;
+
+        m_exit = true;
+        m_workingQueuesLock.unlock();
+        m_hashersCond.notify_all();
+        m_writersCond.notify_all();
+
+        for (auto& worker : m_workers) // TODO
         {
             worker.join();
         }
@@ -348,6 +360,15 @@ public:
             }
             else
             {
+                {
+                    std::unique_lock lock(m_workingQueuesLock);
+                    if (--m_remainingTasks == 0)
+                    {
+                        m_success = true;
+                        m_controlThreadCond.notify_one();
+                    }
+                }
+
                 std::cout << "done " << task.startOffset << " to " << task.stopOffset << std::endl;
             }
         }
@@ -407,12 +428,12 @@ public:
 
             for (; task.currentOffset < task.stopOffset;)
             {
-                if (m_stop.load(std::memory_order_acquire))
-                {
-                    // m_exit must be set prior to m_stop
-                    // todo: move to internal loop
-                    break;
-                }
+//                if (m_stop.load(std::memory_order_acquire))
+//                {
+//                    // m_exit must be set prior to m_stop
+//                    // todo: move to internal loop
+//                    break;
+//                }
 
                 boost::crc_32_type crc32;
 
@@ -450,15 +471,17 @@ private:
     FDHandle m_outputFileHandle;
 
     uintmax_t m_fileSize = 0;
-    bool m_success = false;
 
-    std::atomic<bool> m_stop = {false}; // TODO: later
+//    std::atomic<bool> m_stop = {false}; // TODO: later
     std::vector<std::thread> m_workers;
 
     std::condition_variable m_hashersCond;
     std::condition_variable m_writersCond;
+    std::condition_variable m_controlThreadCond;
     std::mutex m_workingQueuesLock;
     bool m_exit = false;
+    bool m_success = false;
+    size_t m_remainingTasks = 0;
     std::vector<std::unique_ptr<Task>> m_tasksToProcess;
     std::vector<std::unique_ptr<Task>> m_readyTasks;
 };
