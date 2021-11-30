@@ -47,12 +47,14 @@ struct Task final
 
     std::vector<boost::crc_32_type::value_type> blocksHashes;
 
-    // precondition: offset may only be incremented for successive calls
+    friend class FileHash;
+
+private:
+    // precondition: on successive calls offset must be equal or greater than previous offset value, but not greater than oldMappingSize (of filesize)
     std::pair<void*, size_t> GetPointerToOffset(const uintmax_t offset)
     {
-//        if () //TODO: throw maybe?
-        const auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
-        if (offset < mappingOffsetEnd) // TODO: check boundaries
+        auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
+        const auto& getPointerToMappedOffset = [&]()
         {
             const size_t pointerOffset = offset - currentMappingOffset;
             const size_t size = mappingOffsetEnd - (currentMappingOffset + pointerOffset);
@@ -61,55 +63,39 @@ struct Task final
             pointer += pointerOffset;
 
             return std::make_pair(pointer, size);
+        };
+
+        if (offset < mappingOffsetEnd)
+        {
+            return getPointerToMappedOffset();
         }
         else // remap
         {
-            const uintmax_t oldMappingSize = currentMapping.Size(); // will be multiple of page size except for the tail
+            const uintmax_t oldMappingSize = currentMapping.Size(); // aligned by page size except for the tail
             currentMapping.Reset();
 
             currentMappingOffset += oldMappingSize;
 
-            const uintmax_t remainingFileSize = fileSize - currentMappingOffset; // TODO: if zero?
-            size_t mappingSize = 0;
-            if (oldMappingSize > remainingFileSize)
-            {
-                mappingSize = remainingFileSize;
-            }
-            else
-            {
-                mappingSize = oldMappingSize;
-            }
-//            const size_t mappingSize = std::min(oldMappingSize, remainingFileSize);
+            const uintmax_t remainingFileSize = fileSize - currentMappingOffset;
+            const size_t mappingSize = std::min(oldMappingSize, remainingFileSize);
             auto* const data = mmap64(nullptr, mappingSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), currentMappingOffset); // initial mapping
             if (data == MAP_FAILED)
             {
-                //TODO: handle errors
-                throw std::runtime_error("mmap64 failed " + std::to_string(errno));
+                const auto errnoCopy = errno;
+                throw std::runtime_error("mmap64 failed; offset: " + std::to_string(currentMappingOffset) + "; len: " + std::to_string(mappingSize) + "; errno: " + std::to_string(errnoCopy));
             }
-            const auto adviseResult = madvise(data, mappingSize, MADV_SEQUENTIAL);
-            if (adviseResult == -1)
-            {
-                // TODO: fail
-                throw std::runtime_error("madvise failed " + std::to_string(errno));
-            }
+            madvise(data, mappingSize, MADV_SEQUENTIAL); // ignore error
 
             currentMapping = helpers::MappedChunk(data, mappingSize);
 
-            const auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
-            if (offset < mappingOffsetEnd) // TODO: check boundaries
+            mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
+            if (offset < mappingOffsetEnd)
             {
-                const size_t pointerOffset = offset - currentMappingOffset;
-                const size_t size = mappingOffsetEnd - (currentMappingOffset + pointerOffset);
-
-                auto* pointer = static_cast<uint8_t*>(currentMapping.Data());
-                pointer += pointerOffset;
-
-                return std::make_pair(pointer, size);
+                return getPointerToMappedOffset();
             }
             else
             {
-                // TODO: handle
-                throw std::runtime_error("offset < mappingOffsetEnd");
+                throw std::runtime_error("offset " + std::to_string(offset) + " is greater than remapped mappingOffsetEnd " + std::to_string(mappingOffsetEnd));
             }
         }
     }
