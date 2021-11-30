@@ -135,12 +135,12 @@ private:
     }
 };
 
-constexpr auto ElementSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocksHashes)::value_type);
+constexpr auto HashSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocksHashes)::value_type);
 
 class FileHash final
 {
 public:
-    FileHash(const std::filesystem::path& inputFile, const std::filesystem::path& outputFile, const uintmax_t blockSize) : m_outputFile(outputFile), m_blockSize(blockSize)
+    FileHash(const std::filesystem::path& inputFile, const std::filesystem::path& outputFile, const uintmax_t blockSize) : m_outputFile(outputFile)
     {
         m_inputFileHandle = std::make_shared<FDHandle>(open64(inputFile.c_str(), O_RDONLY)); // TODO: O_LARGEFILE, open64?
         if (!m_inputFileHandle->operator bool())
@@ -155,6 +155,7 @@ public:
         {
             throw std::runtime_error(std::string("inputFile ") + m_outputFile.string() + " size is zero, no hash to calculate");
         }
+        m_blockSize = blockSize == 0 ? m_fileSize : blockSize;
 
         m_outputFileHandle = FDHandle(open64(m_outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)); // TODO: O_LARGEFILE, open64?
         if (!m_outputFileHandle)
@@ -200,128 +201,84 @@ public:
 
     void Run()
     {
-        const auto chunksNumber = (m_fileSize / m_blockSize) + !!(m_fileSize % m_blockSize);
+        const auto chunksCount = (m_fileSize / m_blockSize) + !!(m_fileSize % m_blockSize);
+        const auto outputFileSizeBytes = chunksCount * HashSize;
 
-        const auto fileSize = chunksNumber * ElementSize;
-
-        const auto result = ftruncate64(m_outputFileHandle.Get(), fileSize);
+        const auto result = ftruncate64(m_outputFileHandle.Get(), outputFileSizeBytes);
         if (result == -1)
         {
-            throw std::runtime_error("ftruncate64 failed " + std::to_string(errno));
+            const auto errnoCopy = errno;
+            throw std::runtime_error("ftruncate64 failed, errno = " + std::to_string(errnoCopy));
         }
 
-        /* const */ auto hardwareThreadsCount = std::thread::hardware_concurrency() > 0 ? std::thread::hardware_concurrency() : 1;
+        const uintmax_t hardwareThreadsCount = std::thread::hardware_concurrency() > 0 ? std::thread::hardware_concurrency() : 1;
 
-//        m_fileSize = 139;
-//        m_blockSize = 2;
-//        hardwareThreadsCount = 8;
-
-        unsigned long threadsCount = hardwareThreadsCount;
-        const auto chunks = m_fileSize / m_blockSize;
-
-        // Since thread creation is kinda an expensive operation thread will be created only if file size exceeds this threshold
+        // Since thread creation is kinda an expensive operation thread will be created only if file size exceeds page size
         // Threshold may be determined dynamically, e.g. it won't help to create a lot of threads on some old broken hdd either
-        // A good starting point to define what a small file is may be the fact that mmap-ed memory does lazy loading with the size of page
-        const auto threadDispatchThreshold = sysconf(_SC_PAGE_SIZE);
-        const auto maxNumberOfThreadForFile = m_fileSize / threadDispatchThreshold;
-        if (maxNumberOfThreadForFile == 0)
-        {
-            threadsCount = 1;
-        }
+        constexpr auto ThreadCreationThreshold = (uintmax_t) 1024 * 1024; // 1 MiB
+        const uintmax_t maxNumberOfThreadsForFile = m_fileSize / ThreadCreationThreshold + !!(m_fileSize % ThreadCreationThreshold);
 
-        // TODO: determine dynamically
-        constexpr auto BytesToReserve = (size_t) 1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
-        if (chunks == 0 || (chunks == 1 && (m_fileSize % m_blockSize) == 0) || threadsCount == 1)
+        unsigned long threadsCount = std::min(hardwareThreadsCount, maxNumberOfThreadsForFile);
+
+        const auto pageSize = sysconf(_SC_PAGE_SIZE);
+        constexpr auto HashBufferSizeBytes = (size_t) 1024 * 1024 * 10; // 10 MiB
+        if ((chunksCount == 1 && (m_fileSize % m_blockSize) == 0) || threadsCount == 1)
         {
-            // single thread
-            // Todo: single thread should not wait for the writer thread
+            // Todo: single thread should not wait for the writer thread if chunksCount >> 1
             m_tasksToProcess.emplace_back(new Task{
                 .hashStartTimepoint = {},
                 .inputFileHandle = m_inputFileHandle,
                 .fileSize = m_fileSize,
                 .blockSize = m_blockSize,
-                .pageSize = threadDispatchThreshold,
+                .pageSize = pageSize,
                 .startOffset = 0,
                 .stopOffset = m_fileSize,
                 .currentOffset = 0,
                 .currentMappingOffset = 0});
-            m_tasksToProcess.back()->blocksHashes.reserve(BytesToReserve / ElementSize);
+            m_tasksToProcess.back()->blocksHashes.reserve(HashBufferSizeBytes / HashSize);
         }
         else
         {
-            if (chunks < hardwareThreadsCount)
-            {
-                threadsCount = chunks;
-            }
+            threadsCount = std::min(chunksCount, threadsCount);
 
-            threadsCount = std::min(threadsCount, maxNumberOfThreadForFile);
-
-            const auto fullChunksPerThread = chunks / threadsCount;
+            const auto fullChunksPerThread = chunksCount / threadsCount; // at least one
             const uintmax_t threadViewSize = fullChunksPerThread * m_blockSize; // aligned by m_blockSize, except for the tail
 
-            // add tail processing thread if tail is at least the size of threadDispatchThreshold
-            if (threadsCount < hardwareThreadsCount && ((m_fileSize % m_blockSize) > threadDispatchThreshold)) //TODO: check
-            {
-                threadsCount++;
-            }
-
-            // dispatch fully loaded threads
-            uintmax_t offset = 0;
-            for (int i = 1; i < threadsCount; ++i)
+            for (uintmax_t offset = 0; offset < m_fileSize; offset += threadViewSize)
             {
                 m_tasksToProcess.emplace_back(new Task{
                     .hashStartTimepoint = {},
                     .inputFileHandle = m_inputFileHandle,
                     .fileSize = m_fileSize,
                     .blockSize = m_blockSize,
-                    .pageSize = threadDispatchThreshold,
+                    .pageSize = pageSize,
                     .startOffset = offset,
-                    .stopOffset = offset + threadViewSize,
+                    .stopOffset = std::min(offset + threadViewSize, m_fileSize),
                     .currentOffset = offset,
                     .currentMappingOffset = 0});
-                m_tasksToProcess.back()->blocksHashes.reserve(BytesToReserve / ElementSize);
-
-                offset = threadViewSize * i;
+                m_tasksToProcess.back()->blocksHashes.reserve(HashBufferSizeBytes / HashSize);
             }
-
-            // TODO: what if there will be dead tasks?
-            // dispatch tail processing thread
-            const auto tail = m_fileSize - offset;
-            m_tasksToProcess.emplace_back(new Task{
-                .hashStartTimepoint = {},
-                .inputFileHandle = m_inputFileHandle,
-                .fileSize = m_fileSize,
-                .blockSize = m_blockSize,
-                .pageSize = threadDispatchThreshold,
-                .startOffset = offset,
-                .stopOffset = offset + tail,
-                .currentOffset = offset,
-                .currentMappingOffset = 0});
-            m_tasksToProcess.back()->blocksHashes.reserve(BytesToReserve / ElementSize);
-
         }
 
         std::unique_lock lock(m_workingQueuesLock);
         m_remainingTasks = m_tasksToProcess.size();
 
         m_workers.reserve(m_tasksToProcess.size());
+        for (auto i = 0; i < m_tasksToProcess.size(); i++) // Note m_tasksToProcess.size() may be greater than threadsCount by one
         {
-            for (auto i = 0; i < m_tasksToProcess.size(); i++)
-            {
-                m_workers.emplace_back(std::thread([&]()
-                                                   {
-                                                       HashThreadBody();
-                                                   }));
-            }
+            m_workers.emplace_back(std::thread([&]()
+                                               {
+                                                   HashThreadBody();
+                                               }));
+        }
 
-            const auto writersCount = m_workers.size() / 2 + !!(m_workers.size() % 2);
-            for (auto i = 0; i < writersCount; i++)
-            {
-                m_workers.emplace_back(std::thread([&]()
-                                                   {
-                                                       WritingThreadBody();
-                                                   }));
-            }
+        const auto writersCount = m_workers.size() / 2 + !!(m_workers.size() % 2);
+        for (auto i = 0; i < writersCount; i++)
+        {
+            m_workers.emplace_back(std::thread([&]()
+                                               {
+                                                   WritingThreadBody();
+                                               }));
         }
 
         m_hashersCond.notify_all();
@@ -384,12 +341,13 @@ public:
                 auto& task = *readyTask;
 
                 const auto nextHashIndex = task.currentOffset / task.blockSize + !!(task.currentOffset % task.blockSize);
-                const auto hashFileOffset = (nextHashIndex - task.blocksHashes.size()) * ElementSize;
-                const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * ElementSize, hashFileOffset);
+                const auto hashFileOffset = (nextHashIndex - task.blocksHashes.size()) * HashSize;
+                const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * HashSize, hashFileOffset);
 
                 if (numWritten == -1)
                 {
-                    throw std::runtime_error("pwrite64 failed" + std::to_string(errno));
+                    const auto errnoCopy = errno;
+                    throw std::runtime_error("pwrite64 failed, errno = " + std::to_string(errnoCopy));
                 }
                 task.blocksHashes.clear();
 
@@ -534,7 +492,7 @@ public:
 private:
     const std::chrono::time_point<std::chrono::steady_clock> m_hashStartTimepoint = std::chrono::steady_clock::now(); // default-initialized for simplicity
     const std::filesystem::path m_outputFile;
-    const uintmax_t m_blockSize;
+    uintmax_t m_blockSize;
 
     std::shared_ptr<FDHandle> m_inputFileHandle;
     FDHandle m_outputFileHandle;
@@ -571,7 +529,7 @@ int main(int argc, char* argv[])
             ("help", "produce help message")
             ("input-file", boost::program_options::value(&inputFile)->required(), "Path to input file to hash, must be readable")
             ("output-file", boost::program_options::value(&outputFile)->required(), "Path to output file to store hash result to, must be writable")
-            ("block-size", boost::program_options::value(&blockSize), "Block size to hash, bytes");
+            ("block-size", boost::program_options::value(&blockSize), "Block size to hash, bytes. Pass 0 to hash file in one block");
 
         variables_map vm;
         store(parse_command_line(argc, argv, desc), vm);
