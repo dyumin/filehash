@@ -33,7 +33,7 @@ public:
 
     void Reset(void* const data = nullptr, const size_t size = 0) noexcept
     {
-        if (m_data && m_size) // todo: zero size?
+        if (m_data)
         {
             munmap(m_data, m_size); // ignore error
         }
@@ -52,7 +52,7 @@ public:
 
     explicit operator bool() const noexcept
     {
-        return m_data && m_size;
+        return m_data;
     }
 
     [[nodiscard]] void* Data() const noexcept
