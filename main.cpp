@@ -490,17 +490,14 @@ public:
 //                }
 
                     boost::crc_32_type crc32;
-
-                const auto currentOffsetEnd = std::min(task.currentOffset + task.blockSize, task.fileSize);
-                auto i = task.currentOffset;
-                for (; i < currentOffsetEnd;)
-                {
-                    const auto[data, size] = task.GetPointerToOffset(i); // NOTE: this will be inefficient for small task.blockSize values
-                    const auto bytesToProcess = std::min(currentOffsetEnd - i, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
-                    i += bytesToProcess;
-                    task.currentOffset += bytesToProcess;
-                    crc32.process_bytes(data, bytesToProcess);
-                }
+                    const auto currentOffsetEnd = std::min(task.currentOffset + task.blockSize, task.stopOffset);
+                    for (; task.currentOffset < currentOffsetEnd;)
+                    {
+                        const auto[data, size] = task.GetPointerToOffset(task.currentOffset); // NOTE: this will be inefficient for small task.blockSize values
+                        const auto bytesToProcess = std::min(currentOffsetEnd - task.currentOffset, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
+                        task.currentOffset += bytesToProcess;
+                        crc32.process_bytes(data, bytesToProcess);
+                    }
 
                     task.blocksHashes.push_back(crc32.checksum());
                     if (task.blocksHashes.size() == task.blocksHashes.capacity())
