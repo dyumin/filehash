@@ -48,6 +48,11 @@ int main(int argc, char* argv[])
 
         notify(vm);
 
+        if (blockSize == 0)
+        {
+            blockSize = std::filesystem::file_size(inputFile); // ignore error
+        }
+
         std::ifstream file(inputFile, std::ios::binary);
         std::vector<uint8_t> data;
         std::vector<boost::crc_32_type::value_type> hashes;
