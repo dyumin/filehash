@@ -23,6 +23,12 @@
 using helpers::FDHandle;
 using helpers::MappedChunk;
 
+template<class LHS, class RHS>
+constexpr auto min(const LHS& a, const RHS& b) -> typename std::common_type<LHS, RHS>::type
+{
+    return b < a ? b : a;
+}
+
 // Overall:
 // Simple pread() or std::ifstream might have done the job, but I wanted to try mmap for a long time now, so here we are
 
@@ -211,14 +217,14 @@ public:
             throw std::runtime_error("ftruncate64 failed, errno = " + std::to_string(errnoCopy));
         }
 
-        const uintmax_t hardwareThreadsCount = std::thread::hardware_concurrency() > 0 ? std::thread::hardware_concurrency() : 1;
+        const auto hardwareThreadsCount = std::thread::hardware_concurrency() > 0 ? std::thread::hardware_concurrency() : 1;
 
         // Since thread creation is kinda an expensive operation thread will be created only if file size exceeds page size
         // Threshold may be determined dynamically, e.g. it won't help to create a lot of threads on some old broken hdd either
         constexpr auto ThreadCreationThreshold = (uintmax_t) 1024 * 1024; // 1 MiB
         const uintmax_t maxNumberOfThreadsForFile = m_fileSize / ThreadCreationThreshold + !!(m_fileSize % ThreadCreationThreshold);
 
-        unsigned long threadsCount = std::min(hardwareThreadsCount, maxNumberOfThreadsForFile);
+        auto threadsCount = min(hardwareThreadsCount, maxNumberOfThreadsForFile);
 
         const auto pageSize = sysconf(_SC_PAGE_SIZE);
         constexpr auto HashBufferSizeBytes = (size_t) 1024 * 1024 * 10; // 10 MiB
@@ -452,7 +458,7 @@ public:
                     for (; task.currentOffset < currentOffsetEnd;)
                     {
                         const auto[data, size] = task.GetPointerToOffset(task.currentOffset); // NOTE: this will be inefficient for small task.blockSize values
-                        const auto bytesToProcess = std::min(currentOffsetEnd - task.currentOffset, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
+                        const size_t bytesToProcess = min(currentOffsetEnd - task.currentOffset, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
                         task.currentOffset += bytesToProcess;
                         crc32.process_bytes(data, bytesToProcess);
                     }
