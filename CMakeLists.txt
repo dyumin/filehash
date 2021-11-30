@@ -31,6 +31,3 @@ add_subdirectory(external)
 
 add_executable(filehash main.cpp)
 target_link_libraries(filehash boost_program_options ${PTHREAD_LIBRARY})
-
-add_executable(simple main2.cpp)
-target_link_libraries(simple boost_program_options ${PTHREAD_LIBRARY})
