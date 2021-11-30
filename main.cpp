@@ -182,7 +182,7 @@ public:
             }
         }
 
-        if (!m_success)
+        if (!m_success || m_errorDescription) // actually output file should be fine in case m_success is set even if m_errorDescription is also set, but let's remove it anyway
         {
             std::error_code ec;
             std::filesystem::remove(m_outputFile, ec); // ignore error
@@ -333,7 +333,7 @@ public:
         if (m_errorDescription)
         {
             log << "Worker error: " << m_errorDescription.value();
-            m_exit = true; // stop running threads
+            m_exit = true; // stop running threads // NOTE: workers might override initial error on exit, lets ignore that
         }
     }
 
