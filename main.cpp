@@ -68,7 +68,7 @@ private:
             return rem == 0 ? value : (value - rem + pageSize);
         };
 
-        constexpr size_t UnalignedMappingSize = {1024 * 1024 * 10}; // MiB, https://wiki.ubuntu.com/UnitsPolicy
+        constexpr size_t UnalignedMappingSize = {1024 * 1024 * 10}; // MiB
         const size_t maxMMapSize = alignToNearestUpperValue(UnalignedMappingSize);
 
         const uintmax_t remainingFileSize = fileSize - startOffset;
@@ -518,7 +518,7 @@ int main(int argc, char* argv[])
         );
         std::string inputFile;
         std::string outputFile;
-        uintmax_t blockSize = 1024;
+        uintmax_t blockSize = 1000; // 1 MB = 1,000 kB; 1 MiB = 1,024 KiB; https://wiki.ubuntu.com/UnitsPolicy
         desc.add_options()
             ("help", "produce help message")
             ("input-file", boost::program_options::value(&inputFile)->required(), "Path to input file to hash, must be readable")
