@@ -3,6 +3,10 @@ project(filehash)
 
 set(CMAKE_CXX_STANDARD 17)
 
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "force set by root CMakeLists.txt" FORCE)
+endif (NOT CMAKE_BUILD_TYPE)
+
 find_library(PTHREAD_LIBRARY pthread REQUIRED)
 
 # TODO: support clang (-ggdb)
