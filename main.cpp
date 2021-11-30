@@ -191,8 +191,8 @@ public:
         {
             // duration includes time spend writing to output and all the shutdown sequence
             const auto duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_hashStartTimepoint); // seconds with double rep
-            log << "File processed in " << duration.count() << " seconds; "
-                << (double) m_fileSize / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
+            std::cout << "File processed in " << duration.count() << " seconds; "
+                      << (double) m_fileSize / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
 
             fdatasync(m_outputFileHandle.Get()); // ignore error
         }
