@@ -327,132 +327,161 @@ public:
         m_hashersCond.notify_all();
         m_controlThreadCond.wait(lock, [&]()
         {
-            return m_remainingTasks == 0; // TODO: m_stop
+            return m_remainingTasks == 0 || m_errorDescription; // TODO: m_stop
         });
+
+        if (m_errorDescription)
+        {
+            log << "Worker error: " << m_errorDescription.value();
+            m_exit = true; // stop running threads
+        }
     }
 
     void WritingThreadBody()
     {
-        std::unique_ptr<Task> readyTask;
-        std::unique_ptr<Task> taskToHash;
-        while (true)
+        try
         {
+            std::unique_ptr<Task> readyTask;
+            std::unique_ptr<Task> taskToHash;
+
+            while (true)
             {
-                std::unique_lock lock(m_workingQueuesLock);
-                if (taskToHash)
                 {
-                    m_tasksToProcess.emplace_back(std::move(taskToHash));
-                    /**
-                     * The notifying thread does not need to hold the lock on the same mutex as the one held by the waiting thread(s);
-                     * in fact doing so is a pessimization, since the notified thread would immediately block again,
-                     * waiting for the notifying thread to release the lock.
-                     * However, some implementations (in particular many implementations of pthreads) recognize this situation
-                     * and avoid this "hurry up and wait" scenario by transferring the waiting thread from the condition variable's queue
-                     * directly to the queue of the mutex within the notify call, without waking it up.
-                     */
-                    m_hashersCond.notify_one();
-                }
-                if (m_exit)
-                {
-                    return;
-                }
-                if (m_readyTasks.empty())
-                {
-                    m_writersCond.wait(lock, [&]()
+                    std::unique_lock lock(m_workingQueuesLock);
+                    if (taskToHash)
                     {
-                        return m_exit || !m_readyTasks.empty();
-                    });
+                        m_tasksToProcess.emplace_back(std::move(taskToHash));
+                        /**
+                         * The notifying thread does not need to hold the lock on the same mutex as the one held by the waiting thread(s);
+                         * in fact doing so is a pessimization, since the notified thread would immediately block again,
+                         * waiting for the notifying thread to release the lock.
+                         * However, some implementations (in particular many implementations of pthreads) recognize this situation
+                         * and avoid this "hurry up and wait" scenario by transferring the waiting thread from the condition variable's queue
+                         * directly to the queue of the mutex within the notify call, without waking it up.
+                         */
+                        m_hashersCond.notify_one();
+                    }
                     if (m_exit)
                     {
                         return;
                     }
-                }
-
-                readyTask = std::move(m_readyTasks.back());
-                m_readyTasks.pop_back();
-            }
-
-            auto& task = *readyTask;
-
-            const auto nextHashIndex = task.currentOffset / task.blockSize + !!(task.currentOffset % task.blockSize);
-            const auto hashFileOffset = (nextHashIndex - task.blocksHashes.size()) * ElementSize;
-            const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * ElementSize, hashFileOffset);
-
-            if (numWritten == -1)
-            {
-                throw std::runtime_error("pwrite64 failed" + std::to_string(errno));
-            }
-            task.blocksHashes.clear();
-
-            if (task.currentOffset != task.stopOffset)
-            {
-                taskToHash = std::move(readyTask);
-            }
-            else
-            {
-                if (task.currentOffset == task.stopOffset)
-                {
-                    const auto duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - task.hashStartTimepoint.value()); // seconds with double rep
-
-                    // duration includes time spend writing to output
-                    log << "Chunk from " << task.startOffset << " to " << task.stopOffset
-                        << " took " << duration.count() << " seconds; "
-                        << (double) (task.stopOffset - task.startOffset) / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
-                }
-                {
-                    std::unique_lock lock(m_workingQueuesLock);
-                    if (--m_remainingTasks == 0)
+                    if (m_readyTasks.empty())
                     {
-                        m_success = true;
-                        m_controlThreadCond.notify_one();
+                        m_writersCond.wait(lock, [&]()
+                        {
+                            return m_exit || !m_readyTasks.empty();
+                        });
+                        if (m_exit)
+                        {
+                            return;
+                        }
+                    }
+
+                    readyTask = std::move(m_readyTasks.back());
+                    m_readyTasks.pop_back();
+                }
+
+                auto& task = *readyTask;
+
+                const auto nextHashIndex = task.currentOffset / task.blockSize + !!(task.currentOffset % task.blockSize);
+                const auto hashFileOffset = (nextHashIndex - task.blocksHashes.size()) * ElementSize;
+                const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * ElementSize, hashFileOffset);
+
+                if (numWritten == -1)
+                {
+                    throw std::runtime_error("pwrite64 failed" + std::to_string(errno));
+                }
+                task.blocksHashes.clear();
+
+                if (task.currentOffset != task.stopOffset)
+                {
+                    taskToHash = std::move(readyTask);
+                }
+                else
+                {
+                    if (task.currentOffset == task.stopOffset)
+                    {
+                        const auto duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - task.hashStartTimepoint.value()); // seconds with double rep
+
+                        // duration includes time spend writing to output
+                        log << "Chunk from " << task.startOffset << " to " << task.stopOffset
+                            << " took " << duration.count() << " seconds; "
+                            << (double) (task.stopOffset - task.startOffset) / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
+                    }
+                    {
+                        std::unique_lock lock(m_workingQueuesLock);
+                        if (--m_remainingTasks == 0)
+                        {
+                            m_success = true;
+                            m_controlThreadCond.notify_one();
+                        }
                     }
                 }
+
             }
+        }
+        catch (const std::bad_alloc&)
+        {
+            {
+                std::unique_lock lock(m_workingQueuesLock);
+                m_errorDescription = std::string("wr bad_alloc");  // std::string uses SSO for up to 15 (including) symbols
+            }
+            m_controlThreadCond.notify_one();
+        }
+        catch (const std::exception& ex)
+        {
+            {
+                std::unique_lock lock(m_workingQueuesLock);
+                m_errorDescription = ex.what();
+            }
+            m_controlThreadCond.notify_one();
         }
     }
 
     void HashThreadBody()
     {
-        std::unique_ptr<Task> taskPtr;
-        while (true)
+        try
         {
+            std::unique_ptr<Task> taskPtr;
+            while (true)
             {
-                std::unique_lock lock(m_workingQueuesLock);
-                if (m_exit)
                 {
-                    return;
-                }
-                if (m_tasksToProcess.empty())
-                {
-                    m_hashersCond.wait(lock, [&]()
-                    {
-                        return m_exit || !m_tasksToProcess.empty();
-                    });
+                    std::unique_lock lock(m_workingQueuesLock);
                     if (m_exit)
                     {
                         return;
                     }
+                    if (m_tasksToProcess.empty())
+                    {
+                        m_hashersCond.wait(lock, [&]()
+                        {
+                            return m_exit || !m_tasksToProcess.empty();
+                        });
+                        if (m_exit)
+                        {
+                            return;
+                        }
+                    }
+
+                    taskPtr = std::move(m_tasksToProcess.back());
+                    m_tasksToProcess.pop_back();
                 }
 
-                taskPtr = std::move(m_tasksToProcess.back());
-                m_tasksToProcess.pop_back();
-            }
+                auto& task = *taskPtr;
 
-            auto& task = *taskPtr;
+                if (!task.hashStartTimepoint)
+                {
+                    task.hashStartTimepoint = std::chrono::steady_clock::now();
+                }
 
-            if (!task.hashStartTimepoint)
-            {
-                task.hashStartTimepoint = std::chrono::steady_clock::now();
-            }
+                // all arithmetic normalized to zero
+                if (!task.currentMapping)
+                {
+                    task.InitializeMapping();
+                }
 
-            // all arithmetic normalized to zero
-            if (!task.currentMapping)
-            {
-                task.InitializeMapping();
-            }
-
-            for (; task.currentOffset < task.stopOffset;)
-            {
+                for (; task.currentOffset < task.stopOffset;)
+                {
 //                if (m_stop.load(std::memory_order_acquire))
 //                {
 //                    // m_exit must be set prior to m_stop
@@ -460,7 +489,7 @@ public:
 //                    break;
 //                }
 
-                boost::crc_32_type crc32;
+                    boost::crc_32_type crc32;
 
                 const auto currentOffsetEnd = std::min(task.currentOffset + task.blockSize, task.fileSize);
                 auto i = task.currentOffset;
@@ -473,18 +502,35 @@ public:
                     crc32.process_bytes(data, bytesToProcess);
                 }
 
-                task.blocksHashes.push_back(crc32.checksum());
-                if (task.blocksHashes.size() == task.blocksHashes.capacity())
-                {
-                    break;
+                    task.blocksHashes.push_back(crc32.checksum());
+                    if (task.blocksHashes.size() == task.blocksHashes.capacity())
+                    {
+                        break;
+                    }
                 }
-            }
 
+                {
+                    std::unique_lock lock(m_workingQueuesLock);
+                    m_readyTasks.emplace_back(std::move(taskPtr));
+                }
+                m_writersCond.notify_one();
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
             {
                 std::unique_lock lock(m_workingQueuesLock);
-                m_readyTasks.emplace_back(std::move(taskPtr));
+                m_errorDescription = std::string("h bad_alloc");  // std::string uses SSO for up to 15 (including) symbols
             }
-            m_writersCond.notify_one();
+            m_controlThreadCond.notify_one();
+        }
+        catch (const std::exception& ex)
+        {
+            {
+                std::unique_lock lock(m_workingQueuesLock);
+                m_errorDescription = ex.what();
+            }
+            m_controlThreadCond.notify_one();
         }
     }
 
@@ -508,6 +554,7 @@ private:
     bool m_exit = false;
     bool m_success = false;
     size_t m_remainingTasks = 0;
+    std::optional<std::string> m_errorDescription;
     std::vector<std::unique_ptr<Task>> m_tasksToProcess;
     std::vector<std::unique_ptr<Task>> m_readyTasks;
 };
