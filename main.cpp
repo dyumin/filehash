@@ -142,7 +142,7 @@ class FileHash final
 public:
     FileHash(const std::filesystem::path& inputFile, const std::filesystem::path& outputFile, const uintmax_t blockSize) : m_outputFile(outputFile), m_blockSize(blockSize)
     {
-        m_inputFileHandle = std::make_shared<FDHandle>(open(inputFile.c_str(), O_RDONLY)); // TODO: O_LARGEFILE, open64?
+        m_inputFileHandle = std::make_shared<FDHandle>(open64(inputFile.c_str(), O_RDONLY)); // TODO: O_LARGEFILE, open64?
         if (!m_inputFileHandle->operator bool())
         {
             const auto errnoCopy = errno;
@@ -156,7 +156,7 @@ public:
             throw std::runtime_error(std::string("inputFile ") + m_outputFile.string() + " size is zero, no hash to calculate");
         }
 
-        m_outputFileHandle = FDHandle(open(m_outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)); // TODO: O_LARGEFILE, open64?
+        m_outputFileHandle = FDHandle(open64(m_outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)); // TODO: O_LARGEFILE, open64?
         if (!m_outputFileHandle)
         {
             const auto errnoCopy = errno;
