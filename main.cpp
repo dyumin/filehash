@@ -148,7 +148,7 @@ class FileHash final
 public:
     FileHash(const std::filesystem::path& inputFile, const std::filesystem::path& outputFile, const uintmax_t blockSize) : m_outputFile(outputFile)
     {
-        m_inputFileHandle = std::make_shared<FDHandle>(open64(inputFile.c_str(), O_RDONLY)); // TODO: O_LARGEFILE, open64?
+        m_inputFileHandle = std::make_shared<FDHandle>(open64(inputFile.c_str(), O_RDONLY));
         if (!m_inputFileHandle->operator bool())
         {
             const auto errnoCopy = errno;
@@ -163,7 +163,7 @@ public:
         }
         m_blockSize = blockSize == 0 ? m_fileSize : blockSize;
 
-        m_outputFileHandle = FDHandle(open64(m_outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH)); // TODO: O_LARGEFILE, open64?
+        m_outputFileHandle = FDHandle(open64(m_outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH));
         if (!m_outputFileHandle)
         {
             const auto errnoCopy = errno;
@@ -290,7 +290,7 @@ public:
         m_hashersCond.notify_all();
         m_controlThreadCond.wait(lock, [&]()
         {
-            return m_remainingTasks == 0 || m_errorDescription; // TODO: m_stop
+            return m_remainingTasks == 0 || m_errorDescription;
         });
 
         if (m_errorDescription)
@@ -363,15 +363,13 @@ public:
                 }
                 else
                 {
-                    if (task.currentOffset == task.stopOffset)
-                    {
-                        const auto duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - task.hashStartTimepoint.value()); // seconds with double rep
+                    const auto duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - task.hashStartTimepoint.value()); // seconds with double rep
 
-                        // duration includes time spend writing to output
-                        log << "Chunk from " << task.startOffset << " to " << task.stopOffset
-                            << " took " << duration.count() << " seconds; "
-                            << (double) (task.stopOffset - task.startOffset) / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
-                    }
+                    // duration includes time spend writing to output
+                    log << "Chunk from " << task.startOffset << " to " << task.stopOffset
+                        << " took " << duration.count() << " seconds; "
+                        << (double) (task.stopOffset - task.startOffset) / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
+
                     {
                         std::unique_lock lock(m_workingQueuesLock);
                         if (--m_remainingTasks == 0)
@@ -438,7 +436,6 @@ public:
                     task.hashStartTimepoint = std::chrono::steady_clock::now();
                 }
 
-                // all arithmetic normalized to zero
                 if (!task.currentMapping)
                 {
                     task.InitializeMapping();
@@ -446,13 +443,6 @@ public:
 
                 for (; task.currentOffset < task.stopOffset;)
                 {
-//                if (m_stop.load(std::memory_order_acquire))
-//                {
-//                    // m_exit must be set prior to m_stop
-//                    // todo: move to internal loop
-//                    break;
-//                }
-
                     boost::crc_32_type crc32;
                     const auto currentOffsetEnd = std::min(task.currentOffset + task.blockSize, task.stopOffset);
                     for (; task.currentOffset < currentOffsetEnd;)
@@ -505,7 +495,6 @@ private:
 
     uintmax_t m_fileSize = 0;
 
-//    std::atomic<bool> m_stop = {false}; // TODO: later
     std::vector<std::thread> m_workers;
 
     std::condition_variable m_hashersCond;
