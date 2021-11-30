@@ -23,8 +23,12 @@
 using helpers::FDHandle;
 using helpers::MappedChunk;
 
+// Overall:
+// Simple pread() or std::ifstream might have done the job, but I wanted to try mmap for a long time now, so here we are
+
 // defines and global variables are bad, but let's make these since stream synchronisation is not the main purpose of this task
 // std::osyncstream is available in std 20
+// also this way of unique_lock management is absolutely cursed but valid
 std::mutex LogLock;
 #define log for(auto lock57567333 = std::unique_lock(LogLock); lock57567333.owns_lock(); std::unique_lock(std::move(lock57567333)) /*NOLINT(bugprone-use-after-move)*/) \
             std::cout
@@ -59,7 +63,7 @@ private:
             return rem == 0 ? value : (value - rem + pageSize);
         };
 
-        constexpr auto UnalignedMappingSize =  1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
+        constexpr auto UnalignedMappingSize = 1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
         const size_t maxMMapSize = alignToNearestUpperValue(UnalignedMappingSize);
 
         const uintmax_t remainingFileSize = fileSize - startOffset;
