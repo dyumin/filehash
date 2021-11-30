@@ -1,5 +1,6 @@
 #include "mapped_chunk.h"
 #include "fdhandle.h"
+#include "helpers.h"
 
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/variables_map.hpp>
@@ -22,17 +23,12 @@
 
 using helpers::FDHandle;
 using helpers::MappedChunk;
-
-template<class LHS, class RHS>
-constexpr auto min(const LHS& a, const RHS& b) -> typename std::common_type<LHS, RHS>::type
-{
-    return b < a ? b : a;
-}
+using helpers::min;
 
 // Overall:
 // * Simple pread() or std::ifstream might have done the job, but I wanted to try mmap for a long time now, so here we are
 // * SIGINT/SIGTERM handler not implemented
-// * uintmax_t arithmetic might be slow on 32 bit machines
+// * uintmax_t arithmetic might be slow on 32 bit machines and causes a lot of static_casts
 // * This implementation work better with ssd
 
 // defines and global variables are bad, but let's make these since stream synchronisation is not the main purpose of this task
