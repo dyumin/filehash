@@ -6,6 +6,7 @@
 #include <boost/program_options/parsers.hpp>
 #include <boost/crc.hpp>
 
+#include <utility>
 #include <optional>
 #include <chrono>
 #include <iostream>
@@ -18,7 +19,6 @@
 #include <fcntl.h> // open
 #include <sys/mman.h> // mmap
 #include <unistd.h> // sysconf
-#include <sys/types.h>
 
 using helpers::FDHandle;
 using helpers::MappedChunk;
@@ -45,7 +45,7 @@ struct Task final
     std::shared_ptr<FDHandle> inputFileHandle;
     const uintmax_t fileSize;
     const uintmax_t blockSize;
-    const long int pageSize;
+    const size_t pageSize;
 
     const uintmax_t startOffset; // from file start // aligned by blockSize
     const uintmax_t stopOffset; // from file start // aligned by blockSize except for the tail
@@ -69,7 +69,7 @@ private:
             return rem == 0 ? value : (value - rem + pageSize);
         };
 
-        constexpr auto UnalignedMappingSize = 1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
+        constexpr size_t UnalignedMappingSize = {1024 * 1024 * 10}; // MiB, https://wiki.ubuntu.com/UnitsPolicy
         const size_t maxMMapSize = alignToNearestUpperValue(UnalignedMappingSize);
 
         const uintmax_t remainingFileSize = fileSize - startOffset;
@@ -78,7 +78,7 @@ private:
         const size_t mmapSize = alignedRemainingFileSize > maxMMapSize ? maxMMapSize : alignedRemainingFileSize;
 
         const uintmax_t initialMappingOffset = startOffset - (startOffset % pageSize);
-        auto* const data = mmap64(nullptr, mmapSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), initialMappingOffset);
+        auto* const data = mmap64(nullptr, mmapSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), static_cast<off64_t>(initialMappingOffset));
         if (data == MAP_FAILED)
         {
             const auto errnoCopy = errno;
@@ -118,7 +118,7 @@ private:
 
             const uintmax_t remainingFileSize = fileSize - currentMappingOffset;
             const size_t mappingSize = std::min(oldMappingSize, remainingFileSize);
-            auto* const data = mmap64(nullptr, mappingSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), currentMappingOffset); // initial mapping
+            auto* const data = mmap64(nullptr, mappingSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), static_cast<off64_t>(currentMappingOffset)); // initial mapping
             if (data == MAP_FAILED)
             {
                 const auto errnoCopy = errno;
@@ -146,7 +146,7 @@ constexpr auto HashSize = sizeof(decltype(static_cast<Task*>(nullptr)->blocksHas
 class FileHash final
 {
 public:
-    FileHash(const std::filesystem::path& inputFile, const std::filesystem::path& outputFile, const uintmax_t blockSize) : m_outputFile(outputFile)
+    FileHash(const std::filesystem::path& inputFile, std::filesystem::path outputFile, const uintmax_t blockSize) : m_outputFile(std::move(outputFile))
     {
         m_inputFileHandle = std::make_shared<FDHandle>(open64(inputFile.c_str(), O_RDONLY));
         if (!m_inputFileHandle->operator bool())
@@ -210,7 +210,7 @@ public:
         const auto chunksCount = (m_fileSize / m_blockSize) + !!(m_fileSize % m_blockSize);
         const auto outputFileSizeBytes = chunksCount * HashSize;
 
-        const auto result = ftruncate64(m_outputFileHandle.Get(), outputFileSizeBytes);
+        const auto result = ftruncate64(m_outputFileHandle.Get(), static_cast<off64_t>(outputFileSizeBytes));
         if (result == -1)
         {
             const auto errnoCopy = errno;
@@ -226,8 +226,8 @@ public:
 
         auto threadsCount = min(hardwareThreadsCount, maxNumberOfThreadsForFile);
 
-        const auto pageSize = sysconf(_SC_PAGE_SIZE);
-        constexpr auto HashBufferSizeBytes = (size_t) 1024 * 1024 * 10; // 10 MiB
+        const auto pageSize = static_cast<size_t>(sysconf(_SC_PAGE_SIZE));
+        constexpr size_t HashBufferSizeBytes = {1024 * 1024 * 10}; // 10 MiB
         if ((chunksCount == 1 && (m_fileSize % m_blockSize) == 0) || threadsCount == 1)
         {
             // Todo: single thread should not wait for the writer thread if chunksCount >> 1
@@ -270,7 +270,7 @@ public:
         m_remainingTasks = m_tasksToProcess.size();
 
         m_workers.reserve(m_tasksToProcess.size());
-        for (auto i = 0; i < m_tasksToProcess.size(); i++) // Note m_tasksToProcess.size() may be greater than threadsCount by one
+        for (size_t i = 0; i < m_tasksToProcess.size(); i++) // Note m_tasksToProcess.size() may be greater than threadsCount by one
         {
             m_workers.emplace_back(std::thread([&]()
                                                {
@@ -279,7 +279,7 @@ public:
         }
 
         const auto writersCount = m_workers.size() / 2 + !!(m_workers.size() % 2);
-        for (auto i = 0; i < writersCount; i++)
+        for (size_t i = 0; i < writersCount; i++)
         {
             m_workers.emplace_back(std::thread([&]()
                                                {
@@ -348,7 +348,7 @@ public:
 
                 const auto nextHashIndex = task.currentOffset / task.blockSize + !!(task.currentOffset % task.blockSize);
                 const auto hashFileOffset = (nextHashIndex - task.blocksHashes.size()) * HashSize;
-                const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * HashSize, hashFileOffset);
+                const auto numWritten = pwrite64(m_outputFileHandle.Get(), task.blocksHashes.data(), task.blocksHashes.size() * HashSize, static_cast<off64_t>(hashFileOffset));
 
                 if (numWritten == -1)
                 {

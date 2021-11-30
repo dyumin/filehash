@@ -9,7 +9,6 @@ endif (NOT CMAKE_BUILD_TYPE)
 
 find_library(PTHREAD_LIBRARY pthread REQUIRED)
 
-# TODO: support clang (-ggdb)
 set(CMAKE_C_FLAGS_DEBUG "-ggdb -O0 -fno-inline" CACHE STRING "force set by root CMakeLists.txt" FORCE)
 set(CMAKE_CXX_FLAGS_DEBUG "-ggdb -O0 -fno-inline" CACHE STRING "force set by root CMakeLists.txt" FORCE)
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-ggdb -O3" CACHE STRING "force set by root CMakeLists.txt" FORCE)
@@ -17,6 +16,11 @@ set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-ggdb -O3" CACHE STRING "force set by root C
 set(CMAKE_C_FLAGS_RELEASE "-O3" CACHE STRING "force set by root CMakeLists.txt" FORCE)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3" CACHE STRING "force set by root CMakeLists.txt" FORCE)
 string(TOUPPER ${CMAKE_BUILD_TYPE} EXTERNAL_BUILD_TYPE_UC)
+
+set(COMPILER_WARNINGS_FLAGS "-Wformat=2 -Wextra -Wconversion -Wsign-conversion -Wno-unused-parameter -Wno-format-nonliteral -Wformat-security -Werror=format-security")
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COMPILER_WARNINGS_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COMPILER_WARNINGS_FLAGS}")
 
 set(EXTERNAL_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${EXTERNAL_BUILD_TYPE_UC}}")
 set(EXTERNAL_PREFIX_DIR "${CMAKE_BINARY_DIR}/external_result")
