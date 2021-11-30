@@ -20,7 +20,6 @@
 #include <sys/mman.h> // mmap
 #include <unistd.h> // sysconf
 
-
 using helpers::FDHandle;
 using helpers::MappedChunk;
 
@@ -97,8 +96,8 @@ private:
         auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
         const auto& getPointerToMappedOffset = [&]()
         {
-            const size_t pointerOffset = static_cast<size_t>(offset - currentMappingOffset);
-            const size_t size = static_cast<size_t>(mappingOffsetEnd - (currentMappingOffset + pointerOffset));
+            const auto pointerOffset = static_cast<size_t>(offset - currentMappingOffset);
+            const auto size = static_cast<size_t>(mappingOffsetEnd - (currentMappingOffset + pointerOffset));
 
             auto* pointer = static_cast<uint8_t*>(currentMapping.Data());
             pointer += pointerOffset;
@@ -118,7 +117,7 @@ private:
             currentMappingOffset += oldMappingSize;
 
             const uintmax_t remainingFileSize = fileSize - currentMappingOffset;
-            const size_t mappingSize = static_cast<size_t>(std::min(oldMappingSize, remainingFileSize));
+            const auto mappingSize = static_cast<size_t>(std::min(oldMappingSize, remainingFileSize));
             auto* const data = mmap64(nullptr, mappingSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), static_cast<off64_t>(currentMappingOffset)); // initial mapping
             if (data == MAP_FAILED)
             {
