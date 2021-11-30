@@ -20,6 +20,7 @@
 #include <sys/mman.h> // mmap
 #include <unistd.h> // sysconf
 
+
 using helpers::FDHandle;
 using helpers::MappedChunk;
 
@@ -75,7 +76,7 @@ private:
         const uintmax_t remainingFileSize = fileSize - startOffset;
         const uintmax_t alignedRemainingFileSize = alignToNearestUpperValue(remainingFileSize);
 
-        const size_t mmapSize = alignedRemainingFileSize > maxMMapSize ? maxMMapSize : alignedRemainingFileSize;
+        const auto mmapSize = static_cast<size_t>(min(maxMMapSize, alignedRemainingFileSize));
 
         const uintmax_t initialMappingOffset = startOffset - (startOffset % pageSize);
         auto* const data = mmap64(nullptr, mmapSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), static_cast<off64_t>(initialMappingOffset));
@@ -96,8 +97,8 @@ private:
         auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
         const auto& getPointerToMappedOffset = [&]()
         {
-            const size_t pointerOffset = offset - currentMappingOffset;
-            const size_t size = mappingOffsetEnd - (currentMappingOffset + pointerOffset);
+            const size_t pointerOffset = static_cast<size_t>(offset - currentMappingOffset);
+            const size_t size = static_cast<size_t>(mappingOffsetEnd - (currentMappingOffset + pointerOffset));
 
             auto* pointer = static_cast<uint8_t*>(currentMapping.Data());
             pointer += pointerOffset;
@@ -117,7 +118,7 @@ private:
             currentMappingOffset += oldMappingSize;
 
             const uintmax_t remainingFileSize = fileSize - currentMappingOffset;
-            const size_t mappingSize = std::min(oldMappingSize, remainingFileSize);
+            const size_t mappingSize = static_cast<size_t>(std::min(oldMappingSize, remainingFileSize));
             auto* const data = mmap64(nullptr, mappingSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), static_cast<off64_t>(currentMappingOffset)); // initial mapping
             if (data == MAP_FAILED)
             {
@@ -448,7 +449,7 @@ public:
                     for (; task.currentOffset < currentOffsetEnd;)
                     {
                         const auto[data, size] = task.GetPointerToOffset(task.currentOffset); // NOTE: this will be inefficient for small task.blockSize values
-                        const size_t bytesToProcess = min(currentOffsetEnd - task.currentOffset, size); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
+                        const size_t bytesToProcess = static_cast<size_t>(min(currentOffsetEnd - task.currentOffset, size)); // in case of very big task.blockSize, each step will process task.currentMapping.Size() bytes (which also may be big enough)
                         task.currentOffset += bytesToProcess;
                         crc32.process_bytes(data, bytesToProcess);
                     }
