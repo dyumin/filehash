@@ -51,6 +51,36 @@ struct Task final
 
 private:
     // precondition: on successive calls offset must be equal or greater than previous offset value, but not greater than oldMappingSize (of filesize)
+    void InitializeMapping()
+    {
+        const auto& alignToNearestUpperValue = [&](const auto value)
+        {
+            const auto rem = value % pageSize;
+            return rem == 0 ? value : (value - rem + pageSize);
+        };
+
+        constexpr auto UnalignedMappingSize =  1024 * 1024 * 10; // MiB, https://wiki.ubuntu.com/UnitsPolicy
+        const size_t maxMMapSize = alignToNearestUpperValue(UnalignedMappingSize);
+
+        const uintmax_t remainingFileSize = fileSize - startOffset;
+        const uintmax_t alignedRemainingFileSize = alignToNearestUpperValue(remainingFileSize);
+
+        const size_t mmapSize = alignedRemainingFileSize > maxMMapSize ? maxMMapSize : alignedRemainingFileSize;
+
+        const uintmax_t initialMappingOffset = startOffset - (startOffset % pageSize);
+        auto* const data = mmap64(nullptr, mmapSize, PROT_READ, MAP_PRIVATE, inputFileHandle->Get(), initialMappingOffset);
+        if (data == MAP_FAILED)
+        {
+            const auto errnoCopy = errno;
+            throw std::runtime_error("mmap64 failed; offset: " + std::to_string(currentMappingOffset) + "; len: " + std::to_string(mmapSize) + "; errno: " + std::to_string(errnoCopy));
+        }
+        madvise(data, mmapSize, MADV_SEQUENTIAL); // ignore error
+
+        currentMapping = MappedChunk(data, mmapSize);
+        currentMappingOffset = initialMappingOffset;
+    }
+
+    // precondition: on successive calls offset must be equal or greater than previous offset value, but not greater than oldMappingSize (of filesize)
     std::pair<void*, size_t> GetPointerToOffset(const uintmax_t offset)
     {
         auto mappingOffsetEnd = currentMappingOffset + currentMapping.Size();
@@ -414,24 +444,7 @@ public:
             // all arithmetic normalized to zero
             if (!task.currentMapping)
             {
-                const auto MMapMaxSize = task.stopOffset + (task.stopOffset % task.pageSize); // TODO: find the right value
-//                        const auto MMapMaxSize = 4096; // TODO: find the right value
-
-                const auto initialMappingOffset = task.startOffset - (task.startOffset % task.pageSize);
-                auto* const data = mmap64(nullptr, MMapMaxSize, PROT_READ, MAP_PRIVATE, task.inputFileHandle->Get(), initialMappingOffset); // initial mapping
-                if (data == MAP_FAILED)
-                {
-                    // TODO: fail
-                    throw std::runtime_error("mmap64 failed " + std::to_string(errno));
-                }
-                const auto adviseResult = madvise(data, MMapMaxSize, MADV_SEQUENTIAL);
-                if (adviseResult == -1)
-                {
-                    // TODO: fail
-                    throw std::runtime_error("madvise failed " + std::to_string(errno));
-                }
-                task.currentMapping = MappedChunk(data, MMapMaxSize);
-                task.currentMappingOffset = initialMappingOffset;
+                task.InitializeMapping();
             }
 
             for (; task.currentOffset < task.stopOffset;)
