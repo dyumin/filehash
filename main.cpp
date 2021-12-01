@@ -198,7 +198,7 @@ public:
             // duration includes time spend writing to output and all the shutdown sequence
             const auto duration = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_hashStartTimepoint); // seconds with double rep
             std::cout << "File processed in " << duration.count() << " seconds; "
-                      << (double) m_fileSize / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
+                      << (double) m_fileSize / 1000 / 1000 / duration.count() << " MB/s" << std::endl; // zero div exception may fire, although very unlikely
 
             fdatasync(m_outputFileHandle.Get()); // ignore error
         }
@@ -218,9 +218,9 @@ public:
 
         const auto hardwareThreadsCount = std::thread::hardware_concurrency() > 0 ? std::thread::hardware_concurrency() : 1;
 
-        // Since thread creation is kinda an expensive operation thread will be created only if file size exceeds page size
+        // Since thread creation is kinda an expensive operation thread will be created only if file size exceeds specified threshold
         // Threshold may be determined dynamically, e.g. it won't help to create a lot of threads on some old broken hdd either
-        constexpr auto ThreadCreationThreshold = (uintmax_t) 1024 * 1024; // 1 MiB
+        constexpr auto ThreadCreationThreshold = (uintmax_t) 1000 * 1000; // 1 MB
         const uintmax_t maxNumberOfThreadsForFile = m_fileSize / ThreadCreationThreshold + !!(m_fileSize % ThreadCreationThreshold);
 
         auto threadsCount = min(hardwareThreadsCount, maxNumberOfThreadsForFile);
@@ -367,7 +367,7 @@ public:
                     // duration includes time spend writing to output
                     log << "Chunk from " << task.startOffset << " to " << task.stopOffset
                         << " took " << duration.count() << " seconds; "
-                        << (double) (task.stopOffset - task.startOffset) / 1024 / 1024 / duration.count() << " MiB/s" << std::endl; // zero div exception may fire, although very unlikely
+                        << (double) (task.stopOffset - task.startOffset) / 1000 / 1000 / duration.count() << " MB/s" << std::endl; // zero div exception may fire, although very unlikely
 
                     {
                         std::unique_lock lock(m_workingQueuesLock);
