@@ -518,7 +518,7 @@ int main(int argc, char* argv[])
         );
         std::string inputFile;
         std::string outputFile;
-        uintmax_t blockSize = 1000; // 1 MB = 1,000 kB; 1 MiB = 1,024 KiB; https://wiki.ubuntu.com/UnitsPolicy
+        uintmax_t blockSize = {1000 * 1000}; // 1 MB = 1,000 kB = 1,000,000 bytes; https://wiki.ubuntu.com/UnitsPolicy
         desc.add_options()
             ("help", "produce help message")
             ("input-file", boost::program_options::value(&inputFile)->required(), "Path to input file to hash, must be readable")
