@@ -29,7 +29,7 @@ using helpers::min;
 // * Simple pread() or std::ifstream might have done the job, but I wanted to try mmap for a long time now, so here we are
 // * SIGINT/SIGTERM handler not implemented
 // * uintmax_t arithmetic might be slow on 32 bit machines and causes a lot of static_casts
-// * This implementation work better with ssd
+// * This implementation works better with ssd
 
 // defines and global variables are bad, but let's make these since stream synchronisation is not the main purpose of this task
 // std::osyncstream is available in std 20
