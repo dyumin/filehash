@@ -227,7 +227,7 @@ public:
 
         const auto pageSize = static_cast<size_t>(sysconf(_SC_PAGE_SIZE));
         constexpr size_t HashBufferSizeBytes = {1024 * 1024 * 10}; // 10 MiB
-        if ((chunksCount == 1 && (m_fileSize % m_blockSize) == 0) || threadsCount == 1)
+        if (chunksCount == 1 || threadsCount == 1)
         {
             // Todo: single thread should not wait for the writer thread if chunksCount >> 1
             m_tasksToProcess.emplace_back(new Task{
